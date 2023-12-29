@@ -26,7 +26,7 @@ def project(
     G,
     target: torch.Tensor, # [C,H,W] and dynamic range [0,255], W & H must match G output resolution
     *,
-    num_steps                  = 1000,
+    num_steps                  = 100,
     w_avg_samples              = 10000,
     initial_learning_rate      = 0.1,
     initial_noise_factor       = 0.05,
@@ -90,7 +90,7 @@ def project(
         # Synth images from opt_w.
         w_noise = torch.randn_like(w_opt) * w_noise_scale
         ws = (w_opt + w_noise).repeat([1, G.mapping.num_ws, 1])
-        synth_images = G.synthesis(ws, noise_mode='const')
+        synth_images = G.synthesis(ws, noise_mode='const', force_fp32=True)
 
         # Downsample image to 256x256 if it's larger than that. VGG was built for 224x224 images.
         synth_images = (synth_images + 1) * (255/2)
@@ -133,8 +133,8 @@ def project(
 #----------------------------------------------------------------------------
 
 @click.command()
-@click.option('--network', 'network_pkl', help='Network pickle filename', required=True)
-@click.option('--target', 'target_fname', help='Target image file to project to', required=True, metavar='FILE')
+@click.option('--network', 'network_pkl', help='Network pickle filename', required=False)
+@click.option('--target', 'target_fname', help='Target image file to project to', required=False, metavar='FILE')
 @click.option('--num-steps',              help='Number of optimization steps', type=int, default=1000, show_default=True)
 @click.option('--seed',                   help='Random seed', type=int, default=303, show_default=True)
 @click.option('--save-video',             help='Save an mp4 video of optimization progress', type=bool, default=True, show_default=True)
@@ -160,12 +160,15 @@ def run_projection(
 
     # Load networks.
     print('Loading networks from "%s"...' % network_pkl)
-    device = torch.device('cuda')
-    with dnnlib.util.open_url(network_pkl) as fp:
-        G = legacy.load_network_pkl(fp)['G_ema'].requires_grad_(False).to(device) # type: ignore
+    device = torch.device('cpu')
+    # with dnnlib.util.open_url(network_pkl) as fp:
+    #     G = legacy.load_network_pkl(fp)['G_ema'].requires_grad_(False).to(device) # type: ignore
+
+    with open("pickles/celebahq-256.pkl", 'rb') as f:
+        G = legacy.load_network_pkl(f)['G_ema'].requires_grad_(False).to(device)
 
     # Load target image.
-    target_pil = PIL.Image.open(target_fname).convert('RGB')
+    target_pil = PIL.Image.open("data/celebahq/00000.jpg").convert('RGB')
     w, h = target_pil.size
     s = min(w, h)
     target_pil = target_pil.crop(((w - s) // 2, (h - s) // 2, (w + s) // 2, (h + s) // 2))
@@ -198,7 +201,7 @@ def run_projection(
     # Save final projected frame and W vector.
     target_pil.save(f'{outdir}/target.png')
     projected_w = projected_w_steps[-1]
-    synth_image = G.synthesis(projected_w.unsqueeze(0), noise_mode='const')
+    synth_image = G.synthesis(projected_w.unsqueeze(0), noise_mode='const', force_fp32=True)
     synth_image = (synth_image + 1) * (255/2)
     synth_image = synth_image.permute(0, 2, 3, 1).clamp(0, 255).to(torch.uint8)[0].cpu().numpy()
     PIL.Image.fromarray(synth_image, 'RGB').save(f'{outdir}/proj.png')
