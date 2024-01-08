@@ -289,12 +289,10 @@ class Glow(nn.Module):
         return z, bpd, y_logits
 
     def reverse_flow(self, z, y_onehot, temperature):
-        # print(z.shape)
         with torch.no_grad():
             if z is None:
                 mean, logs = self.prior(z, y_onehot)
                 z = gaussian_sample(mean, logs, temperature)
-                print(z.shape)
             x = self.flow(z, temperature=temperature, reverse=True)
         return x
 

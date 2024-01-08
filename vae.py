@@ -102,11 +102,6 @@ class VAE(nn.Module):
         result = torch.flatten(result, start_dim=1)
         result = torch.nan_to_num(result)
         return result
-
-    def decode_partial(self, z):
-        result = self.decoder_input(z)
-        result = result.view(-1, self.final_dim, self.size, self.size)
-        return result
     
     def forward(self, x):
         mu, log_var = self.encode(x)

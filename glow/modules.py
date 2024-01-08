@@ -315,7 +315,7 @@ class InvertibleConv1x1(nn.Module):
     def __init__(self, num_channels, LU_decomposed):
         super().__init__()
         w_shape = [num_channels, num_channels]
-        w_init = torch.qr(torch.randn(*w_shape))[0]
+        w_init = torch.linalg.qr(torch.randn(*w_shape), 'reduced')[0]
 
         if not LU_decomposed:
             self.weight = nn.Parameter(torch.Tensor(w_init))

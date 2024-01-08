@@ -38,7 +38,7 @@ def print_model(encoder, decoder):
 
 def create_model():
     autoencoder = Autoencoder()
-    print_model(autoencoder.encoder, autoencoder.decoder)
+    # print_model(autoencoder.encoder, autoencoder.decoder)
     if torch.cuda.is_available():
         autoencoder = autoencoder.cuda()
         print("Model moved to GPU in order to speed up training.")
