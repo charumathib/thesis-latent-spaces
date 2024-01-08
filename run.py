@@ -232,7 +232,7 @@ def train_latent_space_mapping(
         plot_losses=True,
         load_gen_img_from_file=False
     ):
-    print(f">>Training latent space mapping from {from_.name} to {to_.name} over {n_datapoints} datapoints and {n_epochs} epochs")
+    print(f">> Training latent space mapping from {from_.name} to {to_.name} over {n_datapoints} datapoints and {n_epochs} epochs")
     
     map = nn.Linear(from_.latent_dim, to_.latent_dim)
 
@@ -250,6 +250,8 @@ def train_latent_space_mapping(
             if save_pickles and (from_saved or epoch > 0):
                 from_latent = torch.load(f"latents/{from_.name}/{from_.dataset}/{iter}_z.pth")
                 to_latent = torch.load(f"latents/{to_.name}/{to_.dataset}/{iter}{'_z' if to_.dataset != 'metfaces' else ''}.pth")
+                if to_.latent_layer == "w+":
+                    to_latent = to_.decode_partial(to_latent)
             else:
                 # use GAN to generate the data
                 if data == None:
@@ -293,14 +295,14 @@ def train_latent_space_mapping(
         plt.scatter(range(n_epochs), losses)
         plt.xlabel("Epoch")
         plt.ylabel("Loss")
-        plt.title(f"[{from_.dataset}] {from_.name} to {to_.name} latent space mapping")
+        plt.title(f"[{from_.dataset}] {from_.name} {from_.latent_layer} to {to_.name} {to_.latent_layer} mapping")
         plt.savefig(f"plots/{from_.dataset}_{from_.name}_{to_.name}.png")
         plt.show()
 
-    torch.save(map, f"pickles/latent_mapping_{from_.name}_{to_.name}_{to_.dataset}_z'.pth")
+    torch.save(map, f"pickles/latent_mapping_{from_.name}_{to_.name}_{to_.dataset}_{to_.latent_layer}.pth")
 
 def test_latent_space_mapping(from_, to_, start, end, gen_image=False, classnames=[""], load_gen_img_from_file=False):
-    map = torch.load(f"pickles/latent_mapping_{from_.name}_{to_.name}_{to_.dataset}_z.pth")
+    map = torch.load(f"pickles/latent_mapping_{from_.name}_{to_.name}_{to_.dataset}_{to_.latent_layer}.pth")
 
     latent_mses = []
     pixel_mses = []
@@ -328,6 +330,9 @@ def test_latent_space_mapping(from_, to_, start, end, gen_image=False, classname
                 from_latent = from_.encode(img)
                 if to_.name != "gan":
                     to_latent = to_.encode(img)
+
+            if to_.latent_layer == "w+" and to_latent is not None:
+                to_latent = to_.decode_partial(to_latent)
 
             pred_to_latent = map(from_latent.flatten())
 
@@ -366,28 +371,28 @@ def test_latent_space_mapping(from_, to_, start, end, gen_image=False, classname
     print(f">> Highest latent space MSEs: {latent_mses[-5:] + start}")
     print(f">> Highest pixel space MSEs: {pixel_mses[-5:] + start}")
 
-# def test_double_latent_space_mapping(from_, to_, data, start, end):
-#     for seed in range(start, end):
-#         map1 = torch.load(f"pickles/latent_mapping_{from_.name}_{to_.name}_{to_.dataset}.pth")
-#         map2 = torch.load(f"pickles/latent_mapping_{to_.name}_{from_.name}_{from_.dataset}.pth")
+# TODO: refactor this function
+def test_double_latent_space_mapping(from_, to_, data, start, end):
+    for seed in range(start, end):
+        map1 = torch.load(f"pickles/latent_mapping_{from_.name}_{to_.name}_{to_.dataset}.pth")
+        map2 = torch.load(f"pickles/latent_mapping_{to_.name}_{from_.name}_{from_.dataset}.pth")
 
-#         if from_.name == "gan":
-#             from_latent, img = from_.generate(seed)
-#         elif to_.name == "gan":
-#             _, img = to_.generate(seed)
-#             from_latent = from_.encode(img)
-#         else:
-#             # TODO: this is only implemented for cifar
-#             assert data is not None
-#             img = data[seed][0].reshape(1, 3, 32, 32)
-#             from_latent = from_.encode(img)
+        if from_.name == "gan":
+            from_latent, img = from_.generate(seed)
+        elif to_.name == "gan":
+            _, img = to_.generate(seed)
+            from_latent = from_.encode(img)
+        else:
+            assert data is not None
+            img = data[seed][0].reshape(1, 3, 32, 32)
+            from_latent = from_.encode(img)
 
-#         pred_to_latent = map1(from_latent.flatten())
-#         pred_from_latent = map2(pred_to_latent)
+        pred_to_latent = map1(from_latent.flatten())
+        pred_from_latent = map2(pred_to_latent)
 
-#         from_decoded_pred = from_.decode(pred_from_latent.view(from_.latent_shape))
+        from_decoded_pred = from_.decode(pred_from_latent.view(from_.latent_shape))
 
-#         from_.save_image(from_decoded_pred, f"mapped/{to_.dataset}/{seed}_{from_.name}_to_{to_.name}_to_{from_.name}.jpg")
+        from_.save_image(from_decoded_pred, f"mapped/{to_.dataset}/{seed}_{from_.name}_to_{to_.name}_to_{from_.name}.jpg")
 
 def load_cifar():
     transform = transforms.Compose(
@@ -399,14 +404,8 @@ def load_cifar():
     
 if __name__ == "__main__":
 
-    # ae = Model("ae", "pickles/cifar-ae-1.pkl", "cifar")
-    gan = Model("gan", "pickles/cifar-stylegan.pkl", "cifar", "z")
-    # gan = Model("gan", "pickles/celebahq-256.pkl", "celeba")
-    # gan = Model("gan", "pickles/metfaces.pkl", "metfaces")
-
-    # vae = Model("vae", "pickles/celeba-vae.pth", "celeba")
-    
-    nf = Model("nf", "pickles/glow_affine_coupling.pt", "cifar")
+    gan = Model("gan", "pickles/stylegan-cifar.pkl", "cifar", "w+")
+    nf = Model("nf", "pickles/nf-cifar.pt", "cifar")
      
     train_args = {
         "from_": nf,
