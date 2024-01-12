@@ -7,6 +7,8 @@ from torchvision.utils import save_image
 import os
 import sys
 
+import pandas as pd
+
 import matplotlib.pyplot as plt
 
 import torchvision
@@ -309,9 +311,17 @@ def test_latent_space_mapping(from_, to_, start, end, gen_image=False, classname
 
     from_latent = to_latent = None
     for class_ in classnames:
-        if class_ != "":
-            class_ += "_"
-        for seed in range(start, end):
+        print(class_)
+        if (start == None or end == None) and class_ == "":
+            # generate 10 random seeds
+            seeds = np.random.randint(0, 10000, 10)
+        elif (start == None or end == None) and class_ != "":
+            # get names of images in class folder
+            seeds = [int(filename.split(".")[0]) for filename in os.listdir(f"data/{to_.dataset}/{class_}") if filename.endswith(".jpg")]
+        else:
+            seeds = range(start, end)
+
+        for seed in seeds:
             if from_.name == "gan":
                 assert gen_image
                 from_latent, img = from_.generate(seed)
@@ -325,8 +335,10 @@ def test_latent_space_mapping(from_, to_, start, end, gen_image=False, classname
                 from_latent = from_.encode(img)
             else:
                 img = PIL.Image.open(f"data/{to_.dataset}{'/' + class_ if class_ != '' else ''}/{str(seed).zfill(6)}.jpg").convert('RGB')
-                img = transforms.ToTensor()(img).unsqueeze(0)
+                img = transforms.CenterCrop(from_.pixel_shape[2])(img)
                 img = transforms.Resize(size=from_.pixel_shape[2], antialias=True)(img)
+                img = transforms.ToTensor()(img).unsqueeze(0)
+
                 from_latent = from_.encode(img)
                 if to_.name != "gan":
                     to_latent = to_.encode(img)
@@ -348,21 +360,25 @@ def test_latent_space_mapping(from_, to_, start, end, gen_image=False, classname
             print(f">> [{seed}] MSE (pixel space): {mse}")
             pixel_mses.append(mse.item())
 
-            from_.save_image(img, f"mapped/{to_.dataset}/{class_}{seed}_orig.jpg")
-            from_.save_image(from_decoded, f"mapped/{to_.dataset}/{class_}{seed}_{from_.name}.jpg")
-            to_.save_image(to_decoded_pred, f"mapped/{to_.dataset}/{class_}{seed}_{from_.name}_to_{to_.name}_{to_.latent_layer}.jpg")
+            from_.save_image(img, f"mapped/{to_.dataset}/{class_}{seed}{'_gen' if gen_image else ''}_orig.jpg")
+            from_.save_image(from_decoded, f"mapped/{to_.dataset}/{class_}{seed}{'_gen' if gen_image else ''}_{from_.name}.jpg")
+            to_.save_image(to_decoded_pred, f"mapped/{to_.dataset}/{class_}{seed}{'_gen' if gen_image else ''}_{from_.name}_to_{to_.name}_{to_.latent_layer}.jpg")
             
             if to_latent is not None:
                 to_decoded = to_.decode(to_latent)
                 print(f">> [{seed}] MSE (direct reconstruction): {nn.MSELoss()(to_decoded_pred, to_decoded)}")
-                to_.save_image(to_decoded, f"mapped/{to_.dataset}/{class_}{seed}_{to_.name}.jpg")
+                to_.save_image(to_decoded, f"mapped/{to_.dataset}/{class_}{seed}{'_gen' if gen_image else ''}_{to_.name}.jpg")
     
     # return the indices of the 5 images with the lowest latent space MSEs and lowest pixel space MSEs
     latent_mses = np.array(latent_mses)
     pixel_mses = np.array(pixel_mses)
-    print(np.sort(latent_mses))
+
+    print(f">> Average latent space MSE: {np.mean(latent_mses)}")
+    print(f">> Average pixel space MSE: {np.mean(pixel_mses)}")
+
     latent_mses = np.argsort(latent_mses)
     pixel_mses = np.argsort(pixel_mses)
+
 
     print(f">> Lowest latent space MSEs: {latent_mses[:5] + start}")
     print(f">> Lowest pixel space MSEs: {pixel_mses[:5] + start}")
@@ -404,15 +420,32 @@ def load_cifar():
     
 if __name__ == "__main__":
 
-    gan = Model("gan", "pickles/stylegan-cifar.pkl", "cifar", "w+")
-    nf = Model("nf", "pickles/nf-cifar.pt", "cifar")
-     
+    # gan = Model("gan", "pickles/stylegan-cifar.pkl", "cifar", "w+")
+    gan = Model("gan", "pickles/stylegan-celeba.pkl", "celeba", "z")
+    vae = Model("vae", "pickles/vae-celeba.pth", "celeba")
+
+
+
+    attributes = pd.read_csv("list_attr_celeba.csv")
+    # get first 10 images with positive values for each attribute and move into appropriate folder
+    # for column in attributes.columns[1:]:
+    #     # make new directory for attribute wiping anything that was previously there
+    #     if os.path.exists(f"data/celeba/{column}"):
+    #         os.system(f"rm -rf data/celeba/{column}")
+        
+    #     os.mkdir(f"data/celeba/{column}")
+    #     for index, row in attributes[attributes[column] == 1].head(10).iterrows():
+    #         # copy rather than move the image
+    #         os.system(f"cp data/celeba/{str(row['image_id']).zfill(6)} data/celeba/{column}/{str(row['image_id']).zfill(6)}")
+
+    # nf = Model("nf", "pickles/nf-cifar.pt", "cifar")
+    print(attributes.columns[1:])
     train_args = {
-        "from_": nf,
+        "from_": vae,
         "to_": gan,
         "data": None,
         "n_epochs": 10,
-        "n_datapoints": 10000,
+        "n_datapoints": 2000,
         "criterion": nn.MSELoss(),
         "optimizer": "adam",
         "learning_rate": 1e-3,
@@ -425,12 +458,12 @@ if __name__ == "__main__":
     }
 
     test_args = {
-        "from_": nf,
+        "from_": vae,
         "to_": gan,
-        "start": 10000,
-        "end": 10010,
-        "gen_image": True,
-        "classnames": [""],
+        "start": None,
+        "end": None,
+        "gen_image": False,
+        "classnames": attributes.columns[1:].tolist(),
         "load_gen_img_from_file": True
     }
 
