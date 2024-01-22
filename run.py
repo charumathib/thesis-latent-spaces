@@ -23,6 +23,9 @@ import json
 from glow.datasets import postprocess, preprocess
 from glow.model import Glow
 
+from glow_pytorch.model import Glow as Glow_c
+from glow_pytorch.train import calc_z_shapes
+
 device = torch.device("cpu")
 
 # suppress warnings
@@ -44,9 +47,9 @@ class Model():
         
         # temporarily redirect stdout to devnull to suppress printing of state dict keys
         original_stdout = sys.stdout
-        sys.stdout = open(os.devnull, 'w')
+        sys.stdout = open(os.devnull, 'w')     
 
-        if self.model == "nf": # normalizing flow
+        if self.model == "nf" and self.dataset == "cifar": # normalizing flow
             with open("glow/hparams.json") as json_file:  
                 hparams = json.load(json_file)
                 
@@ -59,9 +62,20 @@ class Model():
             self.model_ = self.model_.eval()
             sys.stdout = original_stdout
 
-            assert self.dataset == "cifar"
             self.z_shape = self.latent_shape = (1, 48, 4, 4)
             self.z_dim = self.latent_dim = 48 * 4 * 4
+        elif self.model == "nf" and self.dataset == "celeba":
+            self.model_ = Glow_c(3, 32, 4, affine=False, conv_lu=True)
+            self.model_ = nn.DataParallel(self.model_)
+            self.model_.load_state_dict(torch.load(pickle, map_location='cpu'))
+            self.model_ = self.model_.module
+            self.model_.eval()
+
+            self.z_shape = [(0, 0, 0)]
+            self.z_shape += calc_z_shapes(3, 64, 32, 4)
+            self.latent_shape = self.z_shape
+            self.z_dim = self.latent_dim = 3 * 64 * 64
+            sys.stdout = original_stdout
         elif self.model == "ae":
             self.model_ = create_model()
             self.model_.load_state_dict(torch.load(pickle, map_location='cpu'))
@@ -99,6 +113,8 @@ class Model():
         
         if self.dataset == "cifar":
             self.pixel_shape = (1, 3, 32, 32)
+        elif self.dataset == "celeba" and self.model == "nf":
+            self.pixel_shape = (1, 3, 64, 64)            
         elif self.dataset == "celeba" or self.dataset == "metfaces":
             self.pixel_shape = (1, 3, 150, 150)
 
@@ -112,10 +128,16 @@ class Model():
         print(f">> Latent shape: {self.latent_shape}")
 
     def encode(self, img):
-        if self.model == "nf":
+        if self.model == "nf" and self.dataset == "cifar":
             z, _, _ = self.model_(preprocess(img))
             return z
-        if self.model == "ae":
+        elif self.model == "nf" and self.dataset == "celeba":
+            img = transforms.Resize(self.pixel_shape[2], antialias=True)(img)
+            img = transforms.CenterCrop(self.pixel_shape[2])(img)
+            _, _, z_ = self.model_(img)
+            z = torch.concat([torch.flatten(elem) for elem in z_], dim=0)
+            return z
+        elif self.model == "ae":
             return self.model_.encoder(img)
         elif self.model == "vae":
             mu, log_var = self.model_.encode(img)
@@ -140,10 +162,21 @@ class Model():
         Returns:
             torch.Tensor: The decoded image in pixel space.
         """
-        latent = latent.view(self.z_shape if self.latent_layer == "z" else self.latent_shape)
-
-        if self.model == "nf":
+        if not (self.model == "nf" and self.dataset == "celeba"):
+            latent = latent.view(self.z_shape if self.latent_layer == "z" else self.latent_shape)
+            
+        if self.model == "nf" and self.dataset == "cifar":
             return postprocess(self.model_(y_onehot=None, z=latent, temperature=0, reverse=True)).cpu()
+        elif self.model == "nf" and self.dataset == "celeba":
+            latents = []
+            z_prev_size = 0
+            z_curr_size = 0
+            for i in range(1, len(self.z_shape)):
+                z_prev_size += self.z_shape[i - 1][0] * self.z_shape[i - 1][1] * self.z_shape[i - 1][2]
+                z_curr_size += self.z_shape[i][0] * self.z_shape[i][1] * self.z_shape[i][2]
+                latents.append(latent[z_prev_size:z_curr_size].view(1, *self.z_shape[i]))
+
+            return self.model_.reverse(latents, reconstruct=True).cpu().data
         elif self.model == "ae":
             return self.model_.decoder(latent)
         elif self.model == "vae":
@@ -162,11 +195,17 @@ class Model():
             raise NotImplementedError
     
     def reconstruct(self, img, filename, n_recon=5) :
-        if self.model == "nf":
+        if self.model == "nf" and self.dataset == "cifar":
             z = self.encode(img)
             pic = self.decode(z).squeeze()
             plt.imshow(pic.permute(1,2,0))
             plt.savefig(f"rec/{filename}")
+        elif self.model == "nf" and self.dataset == "celeba":
+            # z = self.encode(img)
+            # recon = self.decode(z)
+            _, _, z = self.model_(img)
+            recon = self.model_.reverse(z, reconstruct=True)
+            save_image(recon, filename, normalize=True)
         elif self.model == "ae":        
             pics = img
             for _ in range(n_recon):
@@ -185,27 +224,39 @@ class Model():
             raise NotImplementedError
         
     def save_image(self, img, filename):
-        if self.model == "nf":
+        if self.model == "nf" and self.dataset == "cifar":
             plt.imshow(img.detach().squeeze().permute(1,2,0))
             # hide axes
             plt.gca().get_xaxis().set_visible(False)
             plt.gca().get_yaxis().set_visible(False)
             plt.savefig(f"{filename}")
-        elif self.model == "ae" or self.model == "vae":
-            save_image(img, filename)
+        elif self.model == "nf" or self.model == "ae" or self.model == "vae":
+            save_image(img, filename, normalize=True)
         else:
             img_ = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
             PIL.Image.fromarray(img_[0].cpu().numpy(), 'RGB').save(filename)
 
     def generate(self, seed):
-        if self.model == "nf":
+        if self.model == "nf" and self.dataset == "cifar":
             latent = torch.from_numpy(np.random.RandomState(seed).randn(*self.latent_shape)).to(torch.float).to(device)
             img = postprocess(self.model_(y_onehot=None, z=latent, temperature=1, reverse=True))
+        elif self.model == "nf" and self.dataset == "celeba":
+            z_sample = []
+            z_new = torch.from_numpy(np.random.RandomState(seed).randn(*self.latent_shape)).to(torch.float).to(device)
+            z_prev_size = 0
+            z_curr_size = 0
+            for i in range(1, len(self.z_shape)):
+                z_prev_size += self.z_shape[i - 1][0] * self.z_shape[i - 1][1] * self.z_shape[i - 1][2]
+                z_curr_size += self.z_shape[i][0] * self.z_shape[i][1] * self.z_shape[i][2]
+                z_new_ = z_new[z_prev_size:z_curr_size].view(1, *self.z_shape[i]) * 0.7
+                z_sample.append(z_new_.to(device))
+
+            img = self.model_.reverse(z_sample).cpu().data
         elif self.model == "ae":
             latent = torch.from_numpy(np.random.RandomState(seed).randn(*self.latent_shape)).to(torch.float).to(device)
             img = self.model_.decoder(latent)
         elif self.model == "vae":
-            latent = torch.from_numpy(np.random.RandomState(seed).randn(*self.latent_shape(self.dataset))).to(torch.float).to(device)
+            latent = torch.from_numpy(np.random.RandomState(seed).randn(*self.latent_shape)).to(torch.float).to(device)
             img = self.model_.decode(latent).view(self.pixel_shape)
         elif self.model == "gan":
             z = torch.from_numpy(np.random.RandomState(seed).randn(1, self.model_.z_dim)).to(torch.float32).to(device)
@@ -253,8 +304,9 @@ def train_latent_space_mapping(
             if save_pickles and (from_saved or epoch > 0):
                 from_latent = torch.load(f"latents/{from_.name}/{from_.dataset}/{'real' if data is not None else ''}{iter}_z.pth")
                 to_latent = torch.load(f"latents/{to_.name}/{to_.dataset}/{'real' if data is not None else ''}{iter}{'_z' if to_.dataset != 'metfaces' else ''}.pth")
-                if to_.latent_layer == "w+":
-                    to_latent = to_.decode_partial(to_latent)
+                # TODO: fix bug with pickles and uncomment this
+                # if to_.latent_layer == "w+":
+                #     to_latent = to_.decode_partial(to_latent)
             else:
                 # use GAN to generate the data
                 if data == None:
@@ -266,6 +318,9 @@ def train_latent_space_mapping(
                         to_latent = to_.encode(img)
                     elif to_.model == "gan":
                         to_latent, img = to_.generate(iter)
+                        if to_.latent_layer == "w+":
+                            to_latent = to_.decode_partial(to_latent)
+                        # to_latent = torch.load(f"latents/{to_.name}/{to_.dataset}/{'real' if data is not None else ''}{iter}{'_z' if to_.dataset != 'metfaces' else ''}.pth")
                         if load_gen_img_from_file:
                             img = PIL.Image.open(f"gen/{to_.name}/{to_.dataset}/{str(iter).zfill(6)}.jpg").convert('RGB')
                             img = transforms.ToTensor()(img).unsqueeze(0)
@@ -335,9 +390,11 @@ def test_latent_space_mapping(from_, to_, start, end, gen_image=False, classname
                 assert from_.dataset == to_.dataset
                 from_latent, img = from_.generate(seed)
                 to_latent, img = to_.generate(seed)
-            elif from_.model == "gan":
-                assert gen_image
+            elif from_.model == "gan" and gen_image:
                 from_latent, img = from_.generate(seed)
+                if load_gen_img_from_file:
+                    img = PIL.Image.open(f"gen/{to_.model}/{to_.dataset}/{str(seed).zfill(6)}.jpg").convert('RGB')
+                    img = transforms.ToTensor()(img).unsqueeze(0)
                 to_latent = to_.encode(img)
             elif to_.model == "gan" and gen_image:
                 to_latent, img = to_.generate(seed)
@@ -348,8 +405,8 @@ def test_latent_space_mapping(from_, to_, start, end, gen_image=False, classname
                 from_latent = from_.encode(img)
             else:
                 img = PIL.Image.open(f"data/{to_.dataset}{'/' + class_ if class_ != '' else ''}/{str(seed).zfill(6)}.jpg").convert('RGB')
-                img = transforms.CenterCrop(from_.pixel_shape[2])(img)
-                img = transforms.Resize(size=from_.pixel_shape[2], antialias=True)(img)
+                img = transforms.CenterCrop(min(from_.pixel_shape[2], to_.pixel_shape[2]))(img)
+                img = transforms.Resize(size=min(from_.pixel_shape[2], to_.pixel_shape[2]), antialias=True)(img)
                 img = transforms.ToTensor()(img).unsqueeze(0)
 
                 from_latent = from_.encode(img)
@@ -358,6 +415,8 @@ def test_latent_space_mapping(from_, to_, start, end, gen_image=False, classname
 
             if to_.latent_layer == "w+" and to_latent is not None:
                 to_latent = to_.decode_partial(to_latent)
+            if from_.latent_layer == "w+" and from_latent is not None:
+                from_latent = from_.decode_partial(from_latent)
 
             pred_to_latent = map(from_latent.flatten())
 
@@ -369,9 +428,9 @@ def test_latent_space_mapping(from_, to_, start, end, gen_image=False, classname
             from_decoded = from_.decode(from_latent)
             to_decoded_pred = to_.decode(pred_to_latent)
 
-            mse = nn.MSELoss()(to_decoded_pred, img)
-            print(f">> [{seed}] MSE (pixel space): {mse}")
-            pixel_mses.append(mse.item())
+            # mse = nn.MSELoss()(to_decoded_pred, img)
+            # print(f">> [{seed}] MSE (pixel space): {mse}")
+            # pixel_mses.append(mse.item())
 
             from_.save_image(img, f"mapped/{to_.dataset}/{class_}{seed}{'_gen' if gen_image else ''}_orig.jpg")
             from_.save_image(from_decoded, f"mapped/{to_.dataset}/{class_}{seed}{'_gen' if gen_image else ''}_{from_.name}.jpg")
@@ -435,35 +494,15 @@ def load_cifar():
     return data
     
 if __name__ == "__main__":
-
-    # gan = Model("gan", "pickles/stylegan-cifar.pkl", "cifar", "w+")
-    # gan1 = Model("gan", "gan", "pickles/stylegan-celeba.pkl", "celeba", "z")
-    # gan2 = Model("gan", "gan", "pickles/stylegan-celeba.pkl", "celeba", "w+")
-    vae1 = Model("vae", "vae", "pickles/vae-celeba.pth", "celeba")
-    vae = Model("vae", "vae-epoch-0-1", "pickles/vae-celeba-0-1.pth", "celeba")
-
-
-
-    # attributes = pd.read_csv("list_attr_celeba.csv")
-    # get first 10 images with positive values for each attribute and move into appropriate folder
-    # for column in attributes.columns[1:]:
-    #     # make new directory for attribute wiping anything that was previously there
-    #     if os.path.exists(f"data/celeba/{column}"):
-    #         os.system(f"rm -rf data/celeba/{column}")
-        
-    #     os.mkdir(f"data/celeba/{column}")
-    #     for index, row in attributes[attributes[column] == 1].head(10).iterrows():
-    #         # copy rather than move the image
-    #         os.system(f"cp data/celeba/{str(row['image_id']).zfill(6)} data/celeba/{column}/{str(row['image_id']).zfill(6)}")
-
-    # nf = Model("nf", "pickles/nf-cifar.pt", "cifar")
+    nf = Model("nf", "nf-celeba", "pickles/nf-celeba.pt", "celeba", "z")
+    gan = Model("gan", "gan", "pickles/stylegan-celeba.pkl", "celeba", "w+")
 
     train_args = {
-        "from_": vae,
-        "to_": vae1,
+        "from_": gan,
+        "to_": nf,
         "data": None,
-        "n_epochs": 10,
-        "n_datapoints": 2000,
+        "n_epochs": 20,
+        "n_datapoints": 100,
         "criterion": nn.MSELoss(),
         "optimizer": "adam",
         "learning_rate": 1e-3,
@@ -476,21 +515,24 @@ if __name__ == "__main__":
     }
 
     test_args = {
-        "from_": vae,
-        "to_": vae1,
-        "start": 10000,
-        "end": 10010,
-        "gen_image": False,
+        "from_": gan,
+        "to_": nf,
+        "start": 0,
+        "end": 10,
+        "gen_image": True,
         "classnames": [""],
         "load_gen_img_from_file": True
     }
 
     # linear mapping between z space and w+ space?
-    # train_latent_space_mapping(**train_args)
+    train_latent_space_mapping(**train_args)
     test_latent_space_mapping(**test_args)
-    # test_latent_space_mapping(nf, gan, None, 10000, 10010, True)
 
-    # test_latent_space_mapping(vae, gan, "", 0, 10, False)
+    # img = PIL.Image.open(f"data/celeba/000001.jpg")
+    # img = transforms.CenterCrop(160)(img)
+    # img = transforms.Resize(size=64, antialias=True)(img)
+    # img = transforms.ToTensor()(img).unsqueeze(0)
+    # nf.reconstruct(img, "test.jpg")  
         
 
         
