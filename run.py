@@ -74,6 +74,8 @@ class Model():
             self.z_shape = [(0, 0, 0)]
             self.z_shape += calc_z_shapes(3, 64, 32, 4)
             self.latent_shape = self.z_shape
+            # TODO: fix bug with latent shape and z shape in gen
+            # self.z_shape = (3, 64, 64)
             self.z_dim = self.latent_dim = 3 * 64 * 64
             sys.stdout = original_stdout
         elif self.model == "ae":
@@ -242,13 +244,13 @@ class Model():
             img = postprocess(self.model_(y_onehot=None, z=latent, temperature=1, reverse=True))
         elif self.model == "nf" and self.dataset == "celeba":
             z_sample = []
-            z_new = torch.from_numpy(np.random.RandomState(seed).randn(*self.latent_shape)).to(torch.float).to(device)
+            z_new = torch.from_numpy(np.random.RandomState(seed).randn(*self.z_shape)).to(torch.float).to(device)
             z_prev_size = 0
             z_curr_size = 0
-            for i in range(1, len(self.z_shape)):
-                z_prev_size += self.z_shape[i - 1][0] * self.z_shape[i - 1][1] * self.z_shape[i - 1][2]
-                z_curr_size += self.z_shape[i][0] * self.z_shape[i][1] * self.z_shape[i][2]
-                z_new_ = z_new[z_prev_size:z_curr_size].view(1, *self.z_shape[i]) * 0.7
+            for i in range(1, len(self.latent_shape)):
+                z_prev_size += self.latent_shape[i - 1][0] * self.latent_shape[i - 1][1] * self.latent_shape[i - 1][2]
+                z_curr_size += self.latent_shape[i][0] * self.latent_shape[i][1] * self.latent_shape[i][2]
+                z_new_ = z_new[z_prev_size:z_curr_size].view(1, *self.latent_shape[i]) * 0.7
                 z_sample.append(z_new_.to(device))
 
             img = self.model_.reverse(z_sample).cpu().data
@@ -270,6 +272,32 @@ class Model():
 
         return z, img
 
+class OneLayerNN(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(OneLayerNN, self).__init__()
+        self.linear = nn.Linear(input_dim, output_dim)
+        self.relu = nn.ReLU()  # Add this line
+
+    def forward(self, x):
+        x = self.linear(x)
+        x = self.relu(x)  # Add this line
+        return x
+
+# TODO: decide whether to do this experiment
+class TwoLayerNN(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(TwoLayerNN, self).__init__()
+        self.linear = nn.Linear(input_dim, output_dim)
+        self.relu = nn.ReLU()  # Add this line
+        self.linear2 = nn.Linear(output_dim, output_dim)
+
+    def forward(self, x):
+        x = self.linear(x)
+        x = self.relu(x)  # Add this line
+        x = self.linear2(x)
+        x = self.relu(x)
+        return x
+    
 def train_latent_space_mapping(
         from_, 
         to_, 
@@ -284,11 +312,19 @@ def train_latent_space_mapping(
         from_saved=False, 
         save_pickles=True, 
         plot_losses=True,
-        load_gen_img_from_file=False
+        load_gen_img_from_file=False,
+        map_type="linear"
     ):
     print(f">> Training latent space mapping from {from_.name} to {to_.name} over {n_datapoints} datapoints and {n_epochs} epochs")
     
-    map = nn.Linear(from_.latent_dim, to_.latent_dim)
+    if map_type == "linear":
+        map = nn.Linear(from_.latent_dim, to_.latent_dim)
+    elif map_type == "nonlinear-1":
+        map = OneLayerNN(from_.latent_dim, to_.latent_dim)
+    elif map_type == "nonlinear-2":
+        map = TwoLayerNN(from_.latent_dim, to_.latent_dim)
+    else:
+        raise(NotImplementedError(f"map type {map_type} not implemented"))
 
     if optimizer == "adam":
         optimizer = optim.Adam(map.parameters(), lr=learning_rate)
@@ -304,23 +340,18 @@ def train_latent_space_mapping(
             if save_pickles and (from_saved or epoch > 0):
                 from_latent = torch.load(f"latents/{from_.name}/{from_.dataset}/{'real' if data is not None else ''}{iter}_z.pth")
                 to_latent = torch.load(f"latents/{to_.name}/{to_.dataset}/{'real' if data is not None else ''}{iter}{'_z' if to_.dataset != 'metfaces' else ''}.pth")
-                # TODO: fix bug with pickles and uncomment this
-                # if to_.latent_layer == "w+":
-                #     to_latent = to_.decode_partial(to_latent)
             else:
                 # use GAN to generate the data
                 if data == None:
                     if from_.model == "gan":
                         from_latent, img = from_.generate(iter)
                         if load_gen_img_from_file:
-                            img = PIL.Image.open(f"gen/{to_.name}/{to_.dataset}/{str(iter).zfill(6)}.jpg").convert('RGB')
+                            img = PIL.Image.open(f"gen/{from_.name}/{to_.dataset}/{str(iter).zfill(6)}.jpg").convert('RGB')
                             img = transforms.ToTensor()(img).unsqueeze(0)
                         to_latent = to_.encode(img)
                     elif to_.model == "gan":
-                        to_latent, img = to_.generate(iter)
-                        if to_.latent_layer == "w+":
-                            to_latent = to_.decode_partial(to_latent)
-                        # to_latent = torch.load(f"latents/{to_.name}/{to_.dataset}/{'real' if data is not None else ''}{iter}{'_z' if to_.dataset != 'metfaces' else ''}.pth")
+                        # to_latent, img = to_.generate(iter)
+                        to_latent = torch.load(f"latents/{to_.name}/{to_.dataset}/{'real' if data is not None else ''}{iter}{'_z' if to_.dataset != 'metfaces' else ''}.pth")
                         if load_gen_img_from_file:
                             img = PIL.Image.open(f"gen/{to_.name}/{to_.dataset}/{str(iter).zfill(6)}.jpg").convert('RGB')
                             img = transforms.ToTensor()(img).unsqueeze(0)
@@ -342,7 +373,12 @@ def train_latent_space_mapping(
                 if save_pickles:
                     torch.save(from_latent, f"latents/{from_.name}/{from_.dataset}/{'real' if data is not None else ''}{iter}_z.pth")
                     torch.save(to_latent, f"latents/{to_.name}/{to_.dataset}/{'real' if data is not None else ''}{iter}_z.pth")
-                
+            
+            if to_.latent_layer == "w+":
+                to_latent = to_.decode_partial(to_latent)
+            if from_.latent_layer == "w+":
+                from_latent = from_.decode_partial(from_latent)
+
             pred_to_latent = map(from_latent.flatten())
 
             loss = criterion(pred_to_latent, to_latent.flatten())
@@ -361,14 +397,84 @@ def train_latent_space_mapping(
         plt.scatter(range(n_epochs), losses)
         plt.xlabel("Epoch")
         plt.ylabel("Loss")
-        plt.title(f"[{from_.dataset}] {from_.name} {from_.latent_layer} to {to_.name} {to_.latent_layer} mapping")
-        plt.savefig(f"plots/{from_.dataset}_{from_.name}_{from_.latent_layer}_{to_.name}_{to_.latent_layer}.png")
+        plt.title(f"[{from_.dataset}] {from_.name} {from_.latent_layer} to {to_.name} {to_.latent_layer} {map_type} mapping")
+        plt.savefig(f"plots/{from_.dataset}_{from_.name}_{from_.latent_layer}_{to_.name}_{to_.latent_layer}_{map_type}.png")
         plt.show()
 
-    torch.save(map, f"pickles/latent_mapping_{from_.name}_{to_.name}_{to_.dataset}_{to_.latent_layer}.pth")
+    torch.save(map, f"pickles/latent_mapping_{from_.name}_{to_.name}_{to_.dataset}_{to_.latent_layer}_{map_type}.pth")
 
-def test_latent_space_mapping(from_, to_, start, end, gen_image=False, classnames=[""], load_gen_img_from_file=False):
-    map = torch.load(f"pickles/latent_mapping_{from_.name}_{to_.name}_{to_.dataset}_{to_.latent_layer}.pth")
+def train_simul_latent_space_mapping(
+        model_names,
+        dataset, 
+        dims,
+        n_epochs,
+        n_datapoints,
+        batch_size,
+        learning_rate,
+        model=None
+    ):
+    latent_dirs = []
+    for model_name in model_names:
+        latent_dirs.append(f"latents/{model_name}/{dataset}")
+
+    maps = []
+    for i in range(len(latent_dirs) - 1):
+        maps.append(nn.Linear(dims[i], dims[i + 1]))
+
+    optimizers = [optim.Adam(maps[i].parameters(), lr=learning_rate) for i in range(len(latent_dirs) - 1)]
+    criterion = nn.MSELoss()
+    losses = [[], []]
+    for epoch in range(n_epochs):
+        epoch_losses = np.array([0 for _ in range(len(latent_dirs) - 1)])
+        for iter in range(n_datapoints):
+            for i in range(len(latent_dirs) - 1):
+                optimizers[i].zero_grad()
+                if i == 0:
+                    from_latent = torch.load(f"{latent_dirs[i]}/{iter}_z.pth")
+                else:
+                    from_latent = pred_to_latent
+
+                to_latent = torch.load(f"{latent_dirs[i+1]}/{iter}_z.pth")
+
+                if "gan" in latent_dirs[i]:
+                    from_latent = model.decode_partial(from_latent)
+                if "gan" in latent_dirs[i+1]:
+                    to_latent = model.decode_partial(to_latent)
+
+                # print(from_latent.shape)
+                # print(to_latent.shape)
+                from_latent = from_latent.detach()
+                # print(maps[i])
+                pred_to_latent = maps[i](from_latent.flatten())
+                # print(pred_to_latent.shape)
+                loss = criterion(pred_to_latent, to_latent.flatten())
+                epoch_losses[i] += loss.item()
+                loss.backward()
+                optimizers[i].step()
+
+                # TODO: look into the 0 loss
+
+                # if iter % batch_size == 0:
+   
+        losses[0].append(epoch_losses[0]/n_datapoints)
+        losses[1].append(epoch_losses[1]/n_datapoints)
+        print(f">> [{iter}] Epoch {epoch} Losses: {epoch_losses/n_datapoints}")
+
+    for i in range(len(maps)):
+        torch.save(maps[i], f"pickles/latent_mapping_{model_names[i]}_{model_names[i+1]}_{dataset}_simul.pth")
+    
+    # plot losses on same plot
+    plt.plot(range(n_epochs), losses[0], label=f"{model_names[0]} to {model_names[1]}")
+    plt.plot(range(n_epochs), losses[1], label=f"{model_names[1]} to {model_names[2]}")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.title(f"Simultaneous linear mapping gan --> vae-21 --> gan")
+    plt.savefig(f"plots/simul_linear_mapping_gan_vae-21_gan.png")
+    plt.show()
+
+def test_latent_space_mapping(from_, to_, start, end, gen_image=False, classnames=[""], load_gen_img_from_file=False, map_type="linear"):
+    map = torch.load(f"pickles/latent_mapping_{from_.name}_{to_.name}_{to_.dataset}_{to_.latent_layer}_{map_type}.pth")
 
     latent_mses = []
     pixel_mses = []
@@ -393,7 +499,7 @@ def test_latent_space_mapping(from_, to_, start, end, gen_image=False, classname
             elif from_.model == "gan" and gen_image:
                 from_latent, img = from_.generate(seed)
                 if load_gen_img_from_file:
-                    img = PIL.Image.open(f"gen/{to_.model}/{to_.dataset}/{str(seed).zfill(6)}.jpg").convert('RGB')
+                    img = PIL.Image.open(f"gen/{from_.model}/{to_.dataset}/{str(seed).zfill(6)}.jpg").convert('RGB')
                     img = transforms.ToTensor()(img).unsqueeze(0)
                 to_latent = to_.encode(img)
             elif to_.model == "gan" and gen_image:
@@ -434,7 +540,7 @@ def test_latent_space_mapping(from_, to_, start, end, gen_image=False, classname
 
             from_.save_image(img, f"mapped/{to_.dataset}/{class_}{seed}{'_gen' if gen_image else ''}_orig.jpg")
             from_.save_image(from_decoded, f"mapped/{to_.dataset}/{class_}{seed}{'_gen' if gen_image else ''}_{from_.name}.jpg")
-            to_.save_image(to_decoded_pred, f"mapped/{to_.dataset}/{class_}{seed}{'_gen' if gen_image else ''}_{from_.name}_to_{to_.name}_{to_.latent_layer}.jpg")
+            to_.save_image(to_decoded_pred, f"mapped/{to_.dataset}/{class_}{seed}{'_gen' if gen_image else ''}_{from_.name}_to_{to_.name}_{to_.latent_layer}_{map_type}.jpg")
             
             if to_latent is not None:
                 to_decoded = to_.decode(to_latent)
@@ -492,17 +598,110 @@ def load_cifar():
     data = torchvision.datasets.CIFAR10(root='./data', train=True,
                                             download=False, transform=transform)
     return data
+
+def test_multiple_latent_space_mapping(models, seeds):
+    for i in range(len(models) - 1):
+        from_ = models[i]
+        to_ = models[i + 1]
+        map = torch.load(f"pickles/latent_mapping_{from_.name}_{to_.name}_{to_.dataset}_simul.pth")
+
+        from_latent = to_latent = None
+        
+        for seed in seeds:
+            if from_.model == "gan":
+                from_latent, img = from_.generate(seed)
+                img = PIL.Image.open(f"gen/{from_.model}/{to_.dataset}/{str(seed).zfill(6)}.jpg").convert('RGB')
+                img = transforms.ToTensor()(img).unsqueeze(0)
+                to_latent = to_.encode(img)
+            elif to_.model == "gan":
+                to_latent, img = to_.generate(seed)
+                img = PIL.Image.open(f"gen/{to_.model}/{to_.dataset}/{str(seed).zfill(6)}.jpg").convert('RGB')
+                img = transforms.ToTensor()(img).unsqueeze(0)
+                from_latent = from_.encode(img)
+            else:
+                img = PIL.Image.open(f"data/{to_.dataset}/{str(seed).zfill(6)}.jpg").convert('RGB')
+                img = transforms.CenterCrop(min(from_.pixel_shape[2], to_.pixel_shape[2]))(img)
+                img = transforms.Resize(size=min(from_.pixel_shape[2], to_.pixel_shape[2]), antialias=True)(img)
+                img = transforms.ToTensor()(img).unsqueeze(0)
+
+                from_latent = from_.encode(img)
+                to_latent = to_.encode(img)
+
+            if to_.latent_layer == "w+":
+                to_latent = to_.decode_partial(to_latent)
+            if from_.latent_layer == "w+":
+                from_latent = from_.decode_partial(from_latent)
+
+            pred_to_latent = map(from_latent.flatten())
+
+            if to_latent is not None:
+                mse = nn.MSELoss()(pred_to_latent, to_latent.flatten())
+                print(f">> [{seed}] MSE (latent space) {from_.name} --> {to_.name}: {mse}")
+                        
+            to_decoded_pred = to_.decode(pred_to_latent)
+            to_.save_image(to_decoded_pred, f"mapped/{to_.dataset}/{seed}_gen_{from_.name}_to_{to_.name}_{to_.latent_layer}_simul.jpg")
+
+def tsne_to_vae(model, n_epochs, n_datapoints, batch_size=1, test=True, test_seeds=range(10)):
+    from_latents = torch.load(f"pickles/celeba_train_{n_datapoints}_datapoints_128d_tsne.pth")
+    map = nn.Linear(128, model.latent_dim)
+
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(map.parameters(), lr=1e-3)
+
+    losses = []
+    for epoch in range(n_epochs):
+        epoch_loss = 0
+        for iter in range(n_datapoints):
+            from_latent = torch.tensor(from_latents[iter])
+            to_latent = torch.load(f"latents/{model.name}/celeba/{iter}_z.pth")
+
+            if model.latent_layer == "w+":
+                to_latent = model.decode_partial(to_latent)
+
+            pred_to_latent = map(from_latent.flatten())
+            loss = criterion(pred_to_latent, to_latent.flatten())
+            loss.backward()
+            epoch_loss += loss.item()
+
+            if iter % batch_size == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+
+        losses.append(epoch_loss/n_datapoints)
+        print(f"Epoch {epoch} Loss: {epoch_loss/n_datapoints}")
     
+    # plot losses on same plot
+    plt.plot(range(n_epochs), losses)
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title(f"tsne 128d {n_datapoints} datapoints --> {model.name}")
+    plt.savefig(f"plots/tsne 128d {n_datapoints} datapoints --> {model.name}")
+    # plt.show()
+
+    torch.save(map, f"pickles/latent_mapping_umap_{model.name}_celeba.pth")
+
+    if test:
+        map = torch.load(f"pickles/latent_mapping_umap_{model.name}_celeba.pth")
+        # from_latents = torch.load("pickles/celeba_test_10_datapoints_128d_umap.pth")
+        for seed in test_seeds:
+            from_latent = torch.tensor(from_latents[seed])
+            pred_to_latent = map(from_latent.flatten())
+            to_decoded_pred = model.decode(pred_to_latent)
+            model.save_image(to_decoded_pred, f"mapped/celeba/{seed}_tsne_{model.name}_{n_datapoints}_datapoints_128d.jpg")
+
+
 if __name__ == "__main__":
-    nf = Model("nf", "nf-celeba", "pickles/nf-celeba.pt", "celeba", "z")
+    # nf = Model("nf", "nf-celeba", "pickles/nf-celeba.pt", "celeba", "z")
+    # nf = Model("nf", "nf", "pickles/nf-cifar.pt", "cifar", "z")
+    vae = Model("vae", "vae-21", "pickles/vae_model_21.pth", "celeba", "z")
     gan = Model("gan", "gan", "pickles/stylegan-celeba.pkl", "celeba", "w+")
 
     train_args = {
-        "from_": gan,
-        "to_": nf,
+        "from_": vae,
+        "to_": gan,
         "data": None,
         "n_epochs": 20,
-        "n_datapoints": 100,
+        "n_datapoints": 2000,
         "criterion": nn.MSELoss(),
         "optimizer": "adam",
         "learning_rate": 1e-3,
@@ -511,28 +710,50 @@ if __name__ == "__main__":
         "from_saved": True,
         "save_pickles": True,
         "plot_losses": True,
-        "load_gen_img_from_file": True
+        "load_gen_img_from_file": True,
+        "map_type": "linear"
     }
 
     test_args = {
-        "from_": gan,
-        "to_": nf,
+        "from_": vae,
+        "to_": gan,
         "start": 0,
         "end": 10,
         "gen_image": True,
         "classnames": [""],
-        "load_gen_img_from_file": True
+        "load_gen_img_from_file": True,
+        "map_type": "linear"
     }
 
+    # train_latent_space_mapping(**train_args)
+    # test_latent_space_mapping(**test_args)
+    # test_args["map_type"] = "nonlinear-1"
+    # test_latent_space_mapping(**test_args)
     # linear mapping between z space and w+ space?
-    train_latent_space_mapping(**train_args)
-    test_latent_space_mapping(**test_args)
+    # train_latent_space_mapping(**train_args)
+    # test_latent_space_mapping(**test_args)
 
-    # img = PIL.Image.open(f"data/celeba/000001.jpg")
-    # img = transforms.CenterCrop(160)(img)
-    # img = transforms.Resize(size=64, antialias=True)(img)
-    # img = transforms.ToTensor()(img).unsqueeze(0)
-    # nf.reconstruct(img, "test.jpg")  
+    # train_simul_latent_space_mapping(
+    #     ["gan", "vae-21", "gan"],
+    #     "celeba",
+    #     [512 * 14, 128, 512 * 14],
+    #     10,
+    #     2000,
+    #     100,
+    #     1e-4,
+    #     gan
+    # )
+
+    tsne_to_vae(gan, 15, 1000)
+
+    # test_multiple_latent_space_mapping(models=[gan, vae, gan], seeds=range(10000, 10010))
+
+    # for i in range(1, 6):
+    #     img = PIL.Image.open(f"data/celeba/00000{i}.jpg")
+    #     img = transforms.CenterCrop(160)(img)
+    #     img = transforms.Resize(size=64, antialias=True)(img)
+    #     img = transforms.ToTensor()(img).unsqueeze(0)
+    #     nf.reconstruct(img, f"test_{i}.jpg")
         
 
         
