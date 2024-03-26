@@ -1,33 +1,31 @@
-import glob
-import torch
 import numpy as np
-from run import Model, OneLayerNN
-import matplotlib.pyplot as plt
+import pandas as pd
+from joblib import load
 
 
-def map_svd(from_, to_, dataset, pickle_location):
-    map = torch.load(f"pickles/{pickle_location}.pth")
+def map_svd(from_, to_, layer, dataset):
+    map = load(f"pickles/latent_mapping_{from_}_{to_}_{dataset}_{layer}_linear.joblib")
+    weights = map.coef_
 
-    weights = map.weight
-    singular_values = torch.linalg.svdvals(weights)
+    singular_values = np.linalg.svd(weights, full_matrices=False, compute_uv=False)
+    variance_explained = singular_values / np.sum(singular_values)
+    cumulative_variance_explained = np.cumsum(variance_explained)
 
-    # Calculate proportion of variance explained
-    variance_explained = singular_values / torch.sum(singular_values)
+    return np.argmax(cumulative_variance_explained > 0.9)
+    
+# models = ['vae-21', 'vqvae', 'gan', 'nf-celeba']
+models = ['ae1', 'nf', 'gan']
 
-    # Calculate cumulative variance explained
-    cumulative_variance_explained = np.cumsum(variance_explained.detach())
+results = []
+for model1 in models:
+    for model2 in models:
+        if model1 != model2 and model1 != 'gan':
+            rank = map_svd(model1, model2, 'w+' if model2 == 'gan' else 'z', 'cifar')
+            results.append({
+                "Encoder Latent Space": model1,
+                "Decoder Latent Space": model2,
+                "Map Rank": rank
+            })
 
-    # Create plot
-    plt.figure(figsize=(6, 4))
-    plt.plot(cumulative_variance_explained)
-    plt.axhline(y=0.99, color='purple', linestyle='--', label='0.99')  # Add horizontal line at 0.95
-    plt.axhline(y=0.95, color='r', linestyle='--'m label='0.95')  # Add horizontal line at 0.95
-    plt.axhline(y=0.8, color='g', linestyle='--', label='0.8')  # Add horizontal line at 0.8
-    plt.legend()
-
-    plt.xlabel('Number of Components')
-    plt.ylabel('Cumulative Explained Variance')
-    plt.title(f'SVD of {from_} {to_} linear mapping on {dataset}')
-    plt.savefig(f"plots/svd_{from_}_{to_}_{dataset}.png")
-
-map_svd('gan', 'vae', 'celeba', 'gan_to_vae')
+df = pd.DataFrame(results)
+print(df.to_latex(index=False))
