@@ -1,1 +1,9 @@
-Code corresponding to my senior thesis for the Bachelor of Arts degree in Computer Science and Statistics at Harvard University.
+Code accompanying paper "All Roads Lead to Rome? Investigating Representational Similarities in Generative Image Models" -- an ICML workshop paper adapted from my senior thesis for the Bachelor of Arts degree in Computer Science and Statistics at Harvard University.
+
+This code is **not in a production-ready/runnable state** as running it requires pickled models to be downloaded from various sources. There is also alot of extra code/files that were used for my thesis but whose corresponding experiments did not make it to the final workshop paper. It is recommended to **reference the code for implementation details** and to build your own code-base to replicate the results.
+
+Important files:
+* The `train_exact_latent_space_mapping` and `test_exact_latent_space_mapping` functions in `run.py` contain the logic of training and testing the performance of linear latent space maps. `gen_sample_fig_real.py` and `gen_sample_fig_synthetic.py` contain plotting code for generating paper figures 1 and 2 respectively.
+* The `metrics.py` file contains code for computing the reconstruction-based metrics described in the paper (pixel-space RMSE, LPIPS, FID -- paper figure 3) with the help of several packages. Latent space MSE on the train and test sets is computed in the `test_celeba_mappings` function. 
+* The `train_probe` function in `probe.py` corresponds to training binary attribute latent space probes (for various models). The `post_map_probe` function in `probe.py` computes the probe-based metrics described in the paper (post-map percentage matches and probe accuracy). All metrics are logged to files and are processed into figures in the `process_training_accuracies" and `parse_post_map_results` functions in `process_results.py` (paper figures 4, 5).
+* After training probes on the checkpointed NF models, the `parse_nf_training_accuracies` function in `probe.py` is used to generate paper figure 6.
