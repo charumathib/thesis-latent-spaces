@@ -24,7 +24,7 @@ def gaussian_likelihood(mean, logs, x):
 
 def gaussian_sample(mean, logs, temperature=1):
     # Sample from Gaussian with temperature
-    z = torch.normal(mean, torch.exp(logs) * temperature)
+    z = torch.normal(mean, 0) # torch.exp(logs) * temperature
 
     return z
 
