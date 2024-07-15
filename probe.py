@@ -429,7 +429,7 @@ def post_map_probe(from_, to_, attribute, gen_image=False, map_type="linear"):
         acc_probe = accuracy_score(labels, np.round(probe_))
         acc_probe_hat = accuracy_score(labels, np.round(probe_hat_))
         log(f"Accuracy of {to_} probe: {acc_probe}")
-        log(f"Accuracy of {from_} --> {to_} probe: {acc_probe_hat}")
+        log(f"Accuracy of {from_} --> {to_} probe: {acc_probe_hat}")w
         log(f"Percent Delta Accuracy: {(acc_probe_hat - acc_probe)/acc_probe * 100}") # we want this to be positive
         log(f"Percentage matches: {(np.round(probe_) == np.round(probe_hat_)).sum().item()/TEST_SIZE}")
 
