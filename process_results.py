@@ -2,49 +2,52 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
+import os
+from tueplots import bundles
 
-# Read the data from the file
-# with open("post_map_probe_logs_gan_vae_reencode.txt", "r") as file:
-#     lines = file.readlines()
+plt.rcParams.update(bundles.icml2024())
+plt.rcParams["text.usetex"] = True
 
-accuracies = {"vae": [], "vqvae": [],  "nf": []}
-# per_attr_acc = {"vae": {}, "vqvae": {},  "nf": {}}
+accuracies = {"vae-diffusion": [], "vqvae": [],  "nf": [], 'dm': []}
 per_attr_acc = []
 data = []
 
 
+model_to_name = {
+    "vae-diffusion": "VAE",
+    "nf": "NF",
+    "dm": "DM",
+    "vqvae": "VQVAE"
+}
 def parse_training_accuracies(models):
     data = []
+    attributes = ["Bald", "Blond_Hair", "Wavy_Hair", "Smiling", "Eyeglasses", 
+                  "Heavy_Makeup", "Male", "No_Beard", "Pale_Skin", "Young"]
+    
     for model in models:
-        with open (f"probe_logs_{model}.txt", "r") as file:
+        with open (f"probe_log_{model}_celeba.txt", "r") as file:
             lines = file.readlines()
-        
-        if model == 'vae':
-            model = "vae (21 epochs)"
-        if model == 'vae-epoch-1':
-            model = "vae (1 epoch)"
-        elif model == 'vae-epoch-0-1':
-            model = "vae (0.1 epochs)"
-        elif model == 'vae-epoch-0':
-            model = "vae (0 epochs)"
 
-        for i in range(0, len(lines), 6):
-            print(lines[i+5].split(": ")[1].strip()[:-1])
+        for i in range(0, len(lines), 4):
+            attribute = lines[i].split(" ")[0].strip()
+            if attribute not in attributes:
+                continue
             data.append({
-                "Attribute": lines[i].split(" ")[0].strip(),
-                "Latents": model,
-                "Test Accuracy": float(lines[i+5].split(": ")[1].strip()[:-1])
+                "Attribute": attribute,
+                "Latents": model_to_name[model],
+                "Test Accuracy": float(lines[i+3].split(": ")[1].strip()[:-1])
             })
     
     df = pd.DataFrame(data)
     print(df)
-    plt.figure(figsize=(20, 4))
-    sns.heatmap(df.pivot("Latents", "Attribute", "Test Accuracy"), annot=True, cmap=sns.cubehelix_palette(as_cmap=True))
-    plt.title("Test Set Probe Accuracy")
-    plt.tight_layout()
-    plt.savefig(f"plots/test_accuracy_heatmap_raining.png", dpi=300)
-
-    # plt.savefig(f"plots/percent_delta_accuracy_heatmap.png", dpi=300)
+    plt.figure(figsize=(10, 0.7))
+    a = sns.heatmap(df.pivot(index="Latents", columns="Attribute", values="Test Accuracy"), annot=True, cmap=sns.cubehelix_palette(as_cmap=True), cbar=False)
+    a.set_xticklabels([])
+    a.tick_params(bottom=False)
+    a.set_yticklabels(a.get_ymajorticklabels(), fontsize = 8, rotation=0)
+    a.set_xlabel("")
+    a.set_ylabel(a.get_ylabel(), fontsize = 8)
+    plt.savefig(f"plots/test_accuracy_heatmap_training.png", dpi=400)
     
 def parse_post_map_results_cifar(models):
     data = []
@@ -69,7 +72,7 @@ def parse_post_map_results_cifar(models):
                 data.append({
                     "Attribute": lines[i].split(": ")[1].strip(),
                     "KL Divergence": float(lines[i+1].split(": ")[1].strip()),
-                    "Latents": f"gan -->  {model}",
+                    "Latents": f"GAN -->  {model}",
                 })
 
     df = pd.DataFrame(data)
@@ -82,6 +85,38 @@ def parse_post_map_results_cifar(models):
     plt.tight_layout()
     plt.savefig(f"plots/kl_divergence_cifar.png", dpi=300)
 
+def parse_nf_training_accuracies():
+    models = ["001001", "006001", "011001", "016001", "021001", "026001"]
+    attributes = ["Bald", "Blond_Hair", "Wavy_Hair", "Smiling", "Eyeglasses", 
+                  "Heavy_Makeup", "Male", "No_Beard", "Pale_Skin", "Young"]
+    
+    accuracies = {attr : [] for attr in attributes}
+    
+    for model in models:
+        with open (f"probe_log_{model}_celeba.txt", "r") as file:
+            lines = file.readlines()
+
+        for i in range(0, len(lines), 4):
+            attr = lines[i].split(" ")[0].strip()
+            print(attr)
+            print(model)
+            accuracies[attr].append(float(lines[i+3].split(": ")[1].strip()[:-1]))
+    
+    plt.figure(figsize=(4, 1.5))
+    for attr in attributes:
+        plt.plot([1, 6, 11, 16, 21, 26], accuracies[attr], label=attr)
+    
+    # create vertical line at x = 6
+    plt.axvline(x=6, color='grey', linestyle='--', linewidth=0.5)
+    
+    plt.legend(loc="lower right", ncol=2)
+    plt.xlabel("NF Training Epoch")
+    plt.ylabel("Probe Accuracy")
+    # plt.title("Probe Accuracy on CelebA NF Latent Space Frozen at Various Epochs")
+    plt.savefig("plots/nf_training_accuracies.png", dpi=400)
+    # plt.show()
+    
+
 def parse_post_map_results(models, models2=[], with_gan=False, vae_training=False):
     global accuracies, per_attr_acc, data
 
@@ -91,62 +126,49 @@ def parse_post_map_results(models, models2=[], with_gan=False, vae_training=Fals
     if not models2:
         models2 = models
     
-    atrributes_to_keep = [
-        "Bangs", 
-        "Black_Hair", 
-        "Blond_Hair", 
-        "Eyeglasses", 
-        "Heavy_Makeup", 
-        "Male", 
-        "Mouth_Slightly_Open",
-        "No_Beard",
-        "Pale_Skin",
-        "Smiling"
-    ]
-
+    atrributes_to_keep = ["Bald", "Blond_Hair", "Wavy_Hair", "Smiling", "Eyeglasses", 
+                          "Heavy_Makeup", "Male", "No_Beard", "Pale_Skin", "Young"]
 
     if not with_gan:
         for model1 in models:
             for model2 in models2:
                 if model1 != model2:
-                    with open (f"post_map_probe_logs_{model1}_{model2}.txt", "r") as file:
-                        lines = file.readlines()
+                    if os.path.isfile(f"post_map_probe_logs_{model1}_{model2}.txt"):
+                        with open (f"post_map_probe_logs_{model1}_{model2}.txt", "r") as file:
+                            lines = file.readlines()
 
-                    for i in range(0, len(lines), 9):
-                        attribute = lines[i].split(": ")[1].strip()
-                        accuracies[model2].append(float(lines[i+3].split(": ")[1].strip()))
-                        if len(accuracies[model2]) < 40:
-                            per_attr_acc.append({"Model": model2, "Attribute": attribute, "Accuracy": float(lines[i+3].split(": ")[1].strip()) * 100})
+                        for i in range(0, len(lines), 7):
+                            attribute = lines[i].split(": ")[1].strip()
+                            accuracies[model2].append(float(lines[i+3].split(": ")[1].strip()))
+                            if len(accuracies[model2]) < 40:
+                                per_attr_acc.append({"Model": model2, "Attribute": attribute, "Accuracy": float(lines[i+3].split(": ")[1].strip()) * 100})
 
-                        if attribute not in atrributes_to_keep:
-                            continue
-                        data.append({
-                            "Attribute": lines[i].split(": ")[1].strip(),
-                            "Accuracy": float(lines[i+3].split(": ")[1].strip()),
-                            "Percent Delta Accuracy": int(float(lines[i+5].split(": ")[1].strip())), 
-                            "MSE": float(lines[i+6].split(": ")[1].strip()),
-                            "Cosine Similarity": float(lines[i+7].split(": ")[1].strip()),
-                            "Percentage Matches": int(float(lines[i+8].split(": ")[1].strip()) * 100),
-                            "Latents": f"{model1} --> {model2}"
-                        })
+                            if attribute not in atrributes_to_keep:
+                                continue
+                            data.append({
+                                "Attribute": lines[i].split(": ")[1].strip(),
+                                "Accuracy": float(lines[i+3].split(": ")[1].strip()),
+                                "Percent Delta Accuracy": int(float(lines[i+5].split(": ")[1].strip())), 
+                                # "MSE": float(lines[i+6].split(": ")[1].strip()),
+                                # "Cosine Similarity": float(lines[i+7].split(": ")[1].strip()),
+                                "Percentage Matches": int(float(lines[i+6].split(": ")[1].strip()) * 100),
+                                "Map": f"{model_to_name[model1]} $\\rightarrow$ {model_to_name[model2]}"
+                            })
 
                         
     else:
         for model in models:
-            with open (f"post_map_probe_logs_gan_{model}_gen.txt", "r") as file:
+            with open (f"post_map_probe_logs_gan_{model}.txt", "r") as file:
                 lines = file.readlines()
-                for i in range(0, len(lines), 4):
+                for i in range(0, len(lines), 2):
                     attribute = lines[i].split(": ")[1].strip()
                     if attribute not in atrributes_to_keep:
                         continue
 
                     data.append({
                         "Attribute": lines[i].split(": ")[1].strip(),
-                        "MSE": float(lines[i+1].split(": ")[1].strip()), 
-                        "Cosine Similarity": float(lines[i+2].split(": ")[1].strip()), 
-                        "Percentage Matches": int(float(lines[i+3].split(": ")[1].strip())),
-                        "Latents": f"gan -->  {model}",
-                        "Accuracy": accuracies[model][i // 4]
+                        "Percentage Matches": int(float(lines[i+1].split(": ")[1].strip()) * 100),
+                        "Map": f"GAN $\\rightarrow$ {model_to_name[model]}"
                     })
 
     df = pd.DataFrame(data)
@@ -155,51 +177,30 @@ def parse_post_map_results(models, models2=[], with_gan=False, vae_training=Fals
     df2 = pd.DataFrame(per_attr_acc)
     print(df2)
 
-
-
-    if accuracies["vae"]:
-        # Define a mask for values > 0.7
-        mask = np.zeros_like(df.pivot("Latents", "Attribute", "MSE"))
-        mask[df.pivot("Latents", "Attribute", "Accuracy") <= 0.7] = True
-    else:
-        mask = None
-
-    
-    s = 4 if vae_training else 5
-    if with_gan or vae_training:
-        # Create a heatmap for the MSE
-        plt.figure(figsize=(10, s))
-        sns.heatmap(df.pivot("Latents", "Attribute", "MSE"), annot=True, fmt=".2f", cmap=sns.cubehelix_palette(as_cmap=True), mask=mask)
-        plt.title("MSE Heatmap")
-        plt.tight_layout()
-        plt.savefig(f"plots/mse_heatmap{'_vae' if vae_training else ''}_partial.png", dpi=300)
-
-        plt.figure(figsize=(10, s))
-        sns.heatmap(df.pivot("Latents", "Attribute", "Cosine Similarity"), annot=True, fmt=".2f", cmap=sns.cubehelix_palette(as_cmap=True), mask=mask)
-        plt.title("Cosine Similarity Heatmap")
-        plt.tight_layout()
-        plt.savefig(f"plots/cosine_similarity_heatmap{'_vae' if vae_training else ''}_partial.png", dpi=300)
-
-        plt.figure(figsize=(10, s))
-        sns.heatmap(df.pivot("Latents", "Attribute", "Percentage Matches"), annot=True, fmt=".0f", cmap=sns.cubehelix_palette(as_cmap=True), mask=mask)
-        plt.title("Percentage Matches Heatmap")
-        plt.tight_layout()
+    if with_gan:
+        plt.figure(figsize=(3.5, 3.5))
+        a = sns.heatmap(df.pivot(index="Map", columns="Attribute", values="Percentage Matches"), annot=True, fmt=".0f", cmap=sns.cubehelix_palette(as_cmap=True), cbar=False)
+        a.set_xticklabels(a.get_xmajorticklabels(), fontsize = 8)
+        a.set_yticklabels(a.get_ymajorticklabels(), fontsize = 8)
+        a.set_xlabel("Attribute", fontsize=8)
+        a.set_ylabel("Map", fontsize=8)
         plt.savefig(f"plots/percentage_matches_heatmap{'_vae' if vae_training else ''}_partial.png", dpi=300)
-
-    if not with_gan:
-        plt.figure(figsize=(16, 4))
-        sns.heatmap(df2.pivot("Model", "Attribute", "Accuracy"), annot=True, fmt=".0f", cmap=sns.cubehelix_palette(as_cmap=True))
-        plt.title("Test Set Probe Accuracy")
-        plt.tight_layout()
-        plt.savefig(f"plots/test_set_probe_accuracy_all.png", dpi=300)
-
-        plt.figure(figsize=(10, 4))
-        sns.heatmap(df.pivot("Latents", "Attribute", "Percent Delta Accuracy"), annot=True, cmap=sns.cubehelix_palette(as_cmap=True), mask=mask)
-        plt.title("Percent Delta Accuracy Heatmap")
-        plt.tight_layout()
+    else:
+        plt.figure(figsize=(3.5, 3))
+        a = sns.heatmap(df.pivot(index="Map", columns="Attribute", values="Percent Delta Accuracy"), annot=True, vmin=-43, vmax=43, cmap=sns.diverging_palette(20, 145, s=60, as_cmap=True), cbar=False)
+        a.set_xticklabels(a.get_xmajorticklabels(), fontsize = 8)
+        a.set_yticklabels(a.get_ymajorticklabels(), fontsize = 8)
+        a.set_xlabel("Attribute", fontsize=8)
+        a.set_ylabel("Map", fontsize=8)
         plt.savefig(f"plots/percent_delta_accuracy_heatmap{'_vae' if vae_training else ''}_partial.png", dpi=300)
 
 
 if __name__ == '__main__':
-    models = ['ae', 'nf']
-    parse_post_map_results_cifar(models)
+    models = ["vae-diffusion", "vqvae", "dm", "nf"]
+
+    parse_post_map_results(models, models, False)
+    parse_post_map_results(models, models, True)
+    parse_training_accuracies(models)
+
+    parse_nf_training_accuracies()
+

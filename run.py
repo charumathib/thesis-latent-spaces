@@ -420,68 +420,6 @@ def test_exact_latent_space_mapping(
 
     return latent_mse
 
-def test_cifar_mappings():
-    global LOG
-    models = ["gan", "vae-diffusion", "nf", "dm"]    
-    results = []
-
-    for model1 in models:
-        for model2 in models:
-            if model1 == "gan": continue
-            elif model1 == model2:
-                print(f"Reconstructing with {model2}")
-                model = Model(model2, "cifar", use_thresholding=False)
-                test_latents, range_ = get_latents(model2, "cifar", train=False, synthetic=False)
-                for i, seed in enumerate(range_):
-                    img = model.decode(torch.Tensor(test_latents[i]))
-                    model.save_image(img, f"mapped/{seed}_{model2}.jpg")
-                latent_mse = 0
-
-            else:
-                print(f"Testing {model1} -> {model2} mapping")
-                model = Model(model2, "cifar", use_thresholding=True)
-                latent_mse = test_exact_latent_space_mapping(model1, model, on_train_set=False, synthetic=False, save_images=True)
-
-                if model2 == "gan":
-                    test_exact_latent_space_mapping(model1, model, on_train_set=False, synthetic=True, save_images=True)
-                
-            results.append(
-                {
-                    "Encoder": model1,
-                    "Decoder": model2,
-                    "Latent MSE": latent_mse
-                }
-            )
-
-    LOG.close()
-
-    df = pd.DataFrame(results)
-    df.to_pickle("cifar_results.pkl")
-    df = pd.read_pickle("cifar_results.pkl").dropna()
-    model_to_name = {
-        'vae-diffusion': 'VAE',
-        'vqvae': 'VQVAE',
-        'nf': 'NF',
-        'dm': 'DM',
-    }
-
-    df['Encoder'] = df['Encoder'].apply(lambda x: model_to_name[x])
-    df['Decoder'] = df['Decoder'].apply(lambda x: model_to_name[x])
-
-    print(df)
-    plt.figure(figsize=(1.5, 1.5))
-    df.Encoder=pd.Categorical(df.Encoder,categories=df.Encoder.unique(),ordered=True)
-    df.Decoder=pd.Categorical(df.Decoder,categories=df.Decoder.unique(),ordered=True)
-    pivoted = df.pivot(index="Encoder", columns="Decoder", values="Latent MSE")
-
-    sns.heatmap(pivoted, annot=True, fmt=".3f", cmap=sns.cubehelix_palette(as_cmap=True), cbar=False)
-    plt.savefig(f"plots/latent_mse_cifar.png", dpi=300)
-
-class ModelLite():
-    def __init__(self, name, dataset):
-        self.name = name
-        self.dataset = dataset
-
 def test_celeba_mappings(from_saved=True):
     models = ["random", "gan", "vae-diffusion", "vqvae", "nf", "dm"] 
 
@@ -499,13 +437,11 @@ def test_celeba_mappings(from_saved=True):
                     for i, seed in enumerate(range_):
                         img = model.decode(torch.Tensor(test_latents[i]))
                         model.save_image(img, f"mapped/{seed}_{model2}.jpg")
-                    latent_mse = 0
 
                 else:
                     print(f"Testing {model1} -> {model2} mapping")
-                    model = ModelLite(model2, "celeba")
-                    latent_mse_train = test_exact_latent_space_mapping(model1, model, on_train_set=True, synthetic=model2=="gan", save_images=False, regularized=model1 in ['dm', 'nf'])
-                    latent_mse_test = test_exact_latent_space_mapping(model1, model, on_train_set=False, synthetic=model2=="gan", save_images=False, regularized=model1 in ['dm', 'nf'])
+                    latent_mse_train = test_exact_latent_space_mapping(model1, model2, on_train_set=True, synthetic=model2=="gan", save_images=False, regularized=model1 in ['dm', 'nf'])
+                    latent_mse_test = test_exact_latent_space_mapping(model1, model2, on_train_set=False, synthetic=model2=="gan", save_images=False, regularized=model1 in ['dm', 'nf'])
       
                 results.append(
                     {
@@ -515,8 +451,6 @@ def test_celeba_mappings(from_saved=True):
                         "Latent MSE Test": latent_mse_test
                     }
                 )
-
-        LOG.close()
 
         df = pd.DataFrame(results)
         df.to_pickle("celeba_results.pkl")
@@ -561,7 +495,7 @@ def reconstruct_images(model, n_images):
         model.reconstruct(img, f"test_{i}.jpg")
         
 if __name__ == "__main__":
-    # train_exact_latent_space_mapping("dm", "vqvae", "celeba", synthetic=False, regularized=False)
+    # train_exact_latent_space_mapping("vae-diffusion", "vqvae", "celeba", synthetic=False, regularized=False)
     # train_exact_latent_space_mapping("nf", "dm", "celeba", synthetic=False, regularized=False)
     
     test_celeba_mappings()

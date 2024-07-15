@@ -7,3 +7,6 @@ mapped/
 pickles/
 plots/
 rec/
+*.txt
+*.pkl
+unused/

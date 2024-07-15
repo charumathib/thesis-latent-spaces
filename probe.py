@@ -13,6 +13,12 @@ from joblib import load
 from itertools import cycle
 import matplotlib.pyplot as plt
 import seaborn as sns
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.metrics import accuracy_score
+from joblib import dump
+from tueplots import figsizes, fonts, bundles
+
+plt.rcParams.update(bundles.icml2024())
 
 TEST_SIZE = 100
 LOG = None
@@ -21,14 +27,10 @@ class SoftmaxProbe(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(SoftmaxProbe, self).__init__()
         self.linear = nn.Linear(input_dim, input_dim)
-        self.relu = nn.ReLU()
-        self.linear2 = nn.Linear(input_dim, output_dim)
         self.softmax = nn.Softmax(dim=1)
 
     def forward(self, x):
         x = self.linear(x)
-        x = self.relu(x) # relu
-        x = self.linear2(x)
         x = self.softmax(x)
 
         return x.squeeze()
@@ -130,13 +132,16 @@ class LatentFilesCifar():
     def __init__(self, model, split):
         # self.classes = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
         self.classes = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-        
+        self.all_latents = []
+
         if split == "train":
-            self.all_latents = [(torch.load(f'latents/{model["name"]}/cifar-real/{idx}_z.pth').detach().flatten().squeeze(), self.classes[idx // 195]) for idx in range(1950)]
-            random.Random(7).shuffle(self.all_latents)
+            for i in range(10):
+                self.all_latents += [(torch.load(f'latents/{model}/cifar_real/{str(idx).zfill(4)}.pth', map_location='cpu').detach().flatten().squeeze(), self.classes[i]) for idx in range(i * 500 + 1, (i * 500) + 401)]
         else:
-            self.all_latents = [(torch.load(f'latents/{model["name"]}/cifar-real/{idx}_z.pth').detach().flatten().squeeze(), (idx - 1950) // 5) for idx in range(1950, 2000)]
-    
+            for i in range(10):
+                self.all_latents += [(torch.load(f'latents/{model}/cifar_real/{str(idx).zfill(4)}.pth', map_location='cpu').detach().flatten().squeeze(), self.classes[i]) for idx in range((i * 500) + 401, (i * 500) + 411)]
+
+        random.Random(7).shuffle(self.all_latents)
     def __len__(self):
         return len(self.all_latents)
 
@@ -146,11 +151,8 @@ class LatentFilesCifar():
 class LatentFiles():
     def __init__(self, model, feature, split, silent=False):
         print(model)
-        if 'vae' in model:
-            self.total_latents = 15000
-        elif model == "nf-celeba":
-            self.total_latents = 10000
-        
+        self.total_latents = 10000
+
         self.test_size = 100
 
         df = pd.read_csv('list_attr_celeba.csv')
@@ -203,15 +205,19 @@ def train_probe_cifar(model):
     latent_shape = train[0][0].shape[0]
     probe = SoftmaxProbe(latent_shape, 10)
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(probe.parameters(), lr=0.0001)
+    #  optimizer = torch.optim.Adam(probe.parameters(), lr=0.0001, weight_decay=0.01) nf, dm
+    optimizer = torch.optim.Adam(probe.parameters(), lr=0.0001, weight_decay=0.001) # vae-diffusion
 
-    for epoch in range(100):
+    for epoch in range(20):
+        epoch_loss = 0
         for i, (z, label) in enumerate(trainloader):
             optimizer.zero_grad()
             output = probe(z)
             loss = criterion(output, label)
             loss.backward()
             optimizer.step()
+            epoch_loss += loss.item()
+        print(f"Epoch {epoch} Loss: {epoch_loss}")
     
     # print accuracy
     correct = 0
@@ -235,77 +241,123 @@ def train_probe_cifar(model):
             total += label.size(0)
             correct += (predicted == label).sum().item()
     log(f'Accuracy of the network on the {total} test images: {100 * correct / total}%')
-    torch.save(probe, f"probes/{model['name']}_cifar.pth")
+    torch.save(probe, f"probes/{model}_cifar.pth")
 
-def train_probe(model, attribute):
-    train = LatentFiles(model["name"], attribute, "train")
-    test = LatentFiles(model["name"], attribute, "test")
+df = pd.read_csv('list_attr_celeba.csv')
+# CelebA
+def get_latents_with_attribute(model, attribute, split):
+    TOTAL_LATENTS = 9100
+
+    with_feature = df[df[attribute] == 1]['image_id']
+    with_feature = list(filter(lambda x: int(x.split('.')[0]) < TOTAL_LATENTS, with_feature))
+    without_feature = df[df[attribute] == -1]['image_id']
+    without_feature = list(filter(lambda x: int(x.split('.')[0]) < TOTAL_LATENTS, without_feature))
+
+    # we want to train on an equal number of positive and negative examples
+    n_to_keep = min(len(with_feature), len(without_feature))
+    train_size = int(0.8 * n_to_keep) # 0.8
+    print(n_to_keep - train_size)
+    test_size = n_to_keep - train_size
+    # train_size = self.n_to_keep
+
+    assert len(with_feature) - test_size >= train_size
+    assert len(without_feature) - test_size >= train_size
+
+    if split == "train":
+        with_feature = with_feature[:train_size]
+        without_feature = without_feature[:train_size]
+    elif split == "test":
+        with_feature = with_feature[len(with_feature) - test_size:]
+        without_feature = without_feature[len(without_feature) - test_size:]
+    elif split == "all":
+        pass
     
-    trainloader = torch.utils.data.DataLoader(train, batch_size=100, shuffle=True)
-    testloader = torch.utils.data.DataLoader(test, batch_size=100, shuffle=True)
-
-    probe = Probe(128, 1)
-    criterion = nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.Adam(probe.parameters(), lr=0.001) # for VAE the LR was 0.001 and for most attributes for VQVAE was 0.0001 for most attr for NF (except straight hair 0.000001) was 0.00001
-    for epoch in range(20): # 20
-        for i, (z, label) in enumerate(trainloader):
-            optimizer.zero_grad()
-            output = probe(z)
-            # print(output)
-            # print(label.float())
-            loss = criterion(output, label.float())
-            loss.backward()
-            optimizer.step()
-    # print accuracy
-    correct = 0
-    total = 0
-
-    with torch.no_grad():
-        for i, (z, label) in enumerate(trainloader):
-            outputs = probe(z)
-            predicted = torch.round(outputs)
-            total += label.size(0)
-            correct += (predicted == label).sum().item()
-    log(f'Accuracy of the network on the {total} train images: {100 * correct / total}%')
+    log(f"{attribute} {split} dataset")
     
-    correct = 0
-    total = 0
-    with torch.no_grad():
-        for i, (z, label) in enumerate(testloader):
-            outputs = probe(z)
-            predicted = torch.round(outputs)
-            total += label.size(0)
-            correct += (predicted == label).sum().item()
-    log(f'Accuracy of the network on the {total} test images: {100 * correct / total}%')
-    
-    # torch.save(probe.state_dict(), f"probes/{attribute}_{model.model}_celeba_statedict.pkl")
-    torch.save(probe, f"probes/{attribute}_{model['name']}_celeba.pth")
+    latents_with_feature = [torch.load(f'latents/{model}/celeba_real/{str(int(idx.split(".")[0])).zfill(6)}.pth').detach().flatten().squeeze() for idx in with_feature]
+    latents_without_feature = [torch.load(f'latents/{model}/celeba_real/{str(int(idx.split(".")[0])).zfill(6)}.pth').detach().flatten().squeeze() for idx in without_feature]
+    all_latents = latents_with_feature + latents_without_feature
 
-def class_accuracies_cifar(model):
+    labels_with_feature = [1 for _ in with_feature]
+    labels_without_feature = [0 for _ in without_feature]
+    all_labels = labels_with_feature + labels_without_feature
+
+    random.Random(7).shuffle(all_latents)
+    random.Random(7).shuffle(all_labels)
+
+    # Convert latents to numpy array
+    all_latents = np.array([latent.numpy() for latent in all_latents])
+    all_labels = np.array(all_labels)
+
+    return all_latents, all_labels
+
+# synthetic celeba latents
+def get_latents(model_name, train):
+    range_ = range(1, 9001) if train else range(9001, 9101)
+    latents = [torch.load(f"latents/{model_name}/celeba_gen/{str(i).zfill(6)}.pth").flatten().detach() for i in range_]
+    return torch.stack(latents, 0).numpy()
+
+# CelebA
+def train_probe(model_name, attribute):
+    train_latents, train_labels = get_latents_with_attribute(model_name, attribute, "train")
+    test_latents, test_labels = get_latents_with_attribute(model_name, attribute, "test")
+    
+    if model_name == "vae-diffusion" or model_name == "vqvae":
+        alpha = 0.005
+    elif model_name == "dm":
+        alpha = 0.02
+    elif model_name == "nf" or model_name in ["001001", "006001", "011001", "016001", "021001", "026001"]:
+        alpha = 0.1
+
+    probe = Lasso(alpha=alpha)
+    probe.fit(train_latents, train_labels)
+
+    # Compute accuracy on the train set
+    train_predictions = probe.predict(train_latents)
+    train_predictions = np.round(train_predictions)  # Round predictions to 0 or 1
+    train_accuracy = accuracy_score(train_labels, train_predictions)
+    log(f'Accuracy of the network on the train set: {100 * train_accuracy}%')
+
+    # Compute accuracy on the test set
+    test_predictions = probe.predict(test_latents)
+    test_predictions = np.round(test_predictions)  # Round predictions to 0 or 1
+    test_accuracy = accuracy_score(test_labels, test_predictions)
+    print(len(test_labels))
+    log(f'Accuracy of the network on the test set: {100 * test_accuracy}%')
+
+    dump(probe, f'probes/{model_name}_{attribute}_probe.joblib')
+
+def class_accuracies_cifar(model, name):
     test = LatentFilesCifar(model, "test")
     testloader = torch.utils.data.DataLoader(test, batch_size=1, shuffle=True)
 
-    probe = torch.load(f"probes/{model['name']}_cifar.pth")
+    probe = torch.load(f"probes/{model}_cifar.pth")
     assignments = [[0 for _ in range(10)] for _ in range(10)]
 
+    correct = 0
     with torch.no_grad():
         for _, (z, label) in enumerate(testloader):
             outputs = probe(z)
             _, predicted = torch.max(outputs, axis=0)
             assignments[int(predicted.item())][int(label.item())] += 1
+            # compute accuracy
+            if int(predicted.item()) == int(label.item()):
+                correct += 1
     
-    # create a heatmap of assignments
-    df = pd.DataFrame(assignments)
-    df.index = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
-    df.columns = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
-    print(df)
-    plt.figure(figsize=(6, 4))
-    sns.heatmap(df, annot=True, cmap=sns.cubehelix_palette(as_cmap=True))
-    plt.xlabel("True Label")
-    plt.ylabel("Predicted Label")
-    plt.title(f"{model['model'].upper()} Confusion Matrix")
-    plt.tight_layout()
-    plt.savefig(f"plots/{model['name']}_cifar_class_accuracies.png", dpi=300)
+    print(f"Accuracy: {correct/100}")
+    # # create a heatmap of assignments
+    # df = pd.DataFrame(assignments)
+    # df.index = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
+    # df.columns = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
+    # print(df)
+    # plt.figure(figsize=(2.2, 2.2))
+    # a = sns.heatmap(df, annot=True, cmap=sns.cubehelix_palette(as_cmap=True), cbar=False)
+    # plt.xlabel("True Label")
+    # plt.ylabel("Predicted Label")
+    # a.set_xticklabels(a.get_xmajorticklabels(), fontsize = 8)
+    # a.set_yticklabels(a.get_ymajorticklabels(), fontsize = 8)
+    # # plt.title(f"{name} Confusion Matrix")
+    # plt.savefig(f"plots/{model}_cifar_class_accuracies.png", dpi=300)
 
 def post_map_probe_cifar(from_, to_, to_latent_layer, gen_image=False, load_gen_img_from_file=False, map_type="linear"):
     map = load(f"pickles/latent_mapping_{from_['name']}_{to_['name']}_cifar_{to_latent_layer}_{map_type}.joblib")
@@ -360,207 +412,47 @@ def post_map_probe_cifar(from_, to_, to_latent_layer, gen_image=False, load_gen_
             log(f"Attribute: {class_}")
             log(f"KL Divergence: {np.mean(kl_divs[i])}")
 
-TEST_SIZE = 200
-def post_map_probe(from_, to_, to_latent_layer, attribute, gen_image=False, load_gen_img_from_file=False, map_type="linear"):
-    map = load(f"pickles/latent_mapping_{from_['name']}_{to_['name']}_celeba_{to_latent_layer}_{map_type}.joblib")
-    # map = torch.load(f"pickles/latent_mapping_{from_['name']}_{to_['name']}_celeba_{to_latent_layer}_linear.pth")
-    probe = torch.load(f"probes/{attribute}_{to_['model']}_celeba.pth")
-    pred_z_to = []
-    pred_z_to_hat = []
+TEST_SIZE = 100
+def post_map_probe(from_, to_, attribute, gen_image=False, map_type="linear"):
+    map = load(f"pickles/latent_mapping_{from_}_{to_}_celeba_{map_type}{'_reg' if from_ in ['nf', 'dm'] else ''}.joblib")
+    probe = load(f"probes/{to_}_{attribute}_probe.joblib")
     
     log(f"Attribute: {attribute}")
     if not gen_image:
-        from_latents = LatentFiles(from_['name'], attribute, "test", silent=True)
-        to_latents = LatentFiles(to_['name'], attribute, "test", silent=True)
-        from_loader = torch.utils.data.DataLoader(from_latents, batch_size=TEST_SIZE, shuffle=False)
-        to_loader = torch.utils.data.DataLoader(to_latents, batch_size=TEST_SIZE, shuffle=False)
+        from_latents, labels = get_latents_with_attribute(from_, attribute, "test")
+        to_latents, _ = get_latents_with_attribute(to_, attribute, "test")
+        
+        to_latents_pred = map.predict(from_latents)
+        probe_ = probe.predict(to_latents)
+        probe_hat_ = probe.predict(to_latents_pred)
 
-        with torch.no_grad():
-            batch_from = next(iter(from_loader))
-            z_hat = torch.Tensor(map.predict(batch_from[0]))
-            # z_hat = batch_from[0]
-            z = next(iter(to_loader))
-            
-            true_labels = batch_from[1]
-            assert(torch.all(true_labels == z[1]))
-            
-            probe_ = probe(z[0])
-            probe_hat_ = probe(z_hat)
-            
-            # print accuracy
-            log(f"# positive examples {torch.sum(true_labels)}")
-            log(f"# negative examples {len(true_labels) - torch.sum(true_labels)}")
-            acc_to = (np.round(probe_) == true_labels).sum().item()/TEST_SIZE
-            log(f"Accuracy of {to_['model']} probe: {acc_to}")
-            acc_from = (np.round(probe_hat_) == true_labels).sum().item()/TEST_SIZE
-            log(f"Accuracy of {from_['model']} --> {to_['model']} probe: {acc_from}")
-            log(f"Percent Delta Accuracy: {(acc_to - acc_from)/acc_to * 100}")
-            
-            log(f"MSE: {((probe_ - probe_hat_) ** 2).mean()}")
-            log(f"Cosine Similarity: {cosine(u=probe_, v=probe_hat_)}")
-            
-            # number of agreement
-            log(f"Percentage matches: {(np.round(probe_) == np.round(probe_hat_)).sum().item()/TEST_SIZE}")
+        acc_probe = accuracy_score(labels, np.round(probe_))
+        acc_probe_hat = accuracy_score(labels, np.round(probe_hat_))
+        log(f"Accuracy of {to_} probe: {acc_probe}")
+        log(f"Accuracy of {from_} --> {to_} probe: {acc_probe_hat}")
+        log(f"Percent Delta Accuracy: {(acc_probe_hat - acc_probe)/acc_probe * 100}") # we want this to be positive
+        log(f"Percentage matches: {(np.round(probe_) == np.round(probe_hat_)).sum().item()/TEST_SIZE}")
+
     else:
-        # used 5000 -> 5000 + TEST_SIZE for the VAE at various stages of training probing
-        for idx in range(14800, 15000):
-            if gen_image:
-                # img = PIL.Image.open(f"gen/gan/celeba/{str(idx).zfill(6)}.jpg").convert('RGB')
-                from_latent = torch.load(f"latents/{from_['name']}/celeba/{idx}_w+.pth").detach() # str(idx).zfill(6)
-                z_to = torch.load(f"latents/{to_['name']}/celeba/{idx}_z.pth").detach().flatten()
+        from_latents = get_latents(from_, False)
+        to_latents = get_latents(to_, False)
 
-            z_to_hat = torch.Tensor(map.predict(from_latent.reshape(1, -1)))
-
-            pred_z_to.append(probe(z_to).item())
-            pred_z_to_hat.append(probe(z_to_hat).item())
-        
-        pred_z_to = np.array(pred_z_to) 
-        pred_z_to_hat = np.array(pred_z_to_hat)
-
-        print(pred_z_to.shape)
-        print(pred_z_to_hat.shape)
-        log(f"MSE: {((pred_z_to - pred_z_to_hat) ** 2).mean()}")
-        log(f"Cosine Similarity: {cosine(u=pred_z_to, v=pred_z_to_hat)}")
-
-        # ones = np.round(pred_z_to) == np.ones_like(pred_z_to)
-        # ones_hat = np.round(pred_z_to_hat) == np.ones_like(pred_z_to_hat)
-
-        # unique, counts = np.unique(np.round(pred_z_to_hat) + np.round(pred_z_to), return_counts=True)
-        # dict_ = defaultdict(int, zip(unique, counts))
-        # print(dict_)
-
-        # log(f"Percent Positive Matches: {dict_[2]/np.sum(ones) * 100}")
-        # log(f"Percent Negative Matches: {dict_[0]/(end - np.sum(ones)) * 100}")
-        log(f"Percent Matches: {(np.round(pred_z_to) == np.round(pred_z_to_hat)).sum().item()/TEST_SIZE * 100}")
-
-def double_post_map_probe(from_, to_, attribute, start, end, gen_image=False, load_gen_img_from_file=False, map_type="linear"):
-    map_1 = torch.load(f"pickles/latent_mapping_{to_.name}_{from_.name}_{to_.dataset}_simul.pth") #_{to_.latent_layer}_{map_type}
-    map_2 = torch.load(f"pickles/latent_mapping_{from_.name}_{to_.name}_{to_.dataset}_simul.pth")
-
-    probe = torch.load(f"probes/{attribute}_{to_.model}_celeba.pth")
-    pred_z_to = []
-    pred_z_to_hat = []
-    
-    log(f"Attribute: {attribute}")
-    # from_latents = LatentFiles(from_, attribute, "test", silent=True)
-    to_latents = LatentFiles(to_, attribute, "test", silent=True)
-    # from_loader = torch.utils.data.DataLoader(from_latents, batch_size=200, shuffle=False)
-    to_loader = torch.utils.data.DataLoader(to_latents, batch_size=200, shuffle=False)
-
-    with torch.no_grad():
-        # batch_from = next(iter(from_loader))
-        z = next(iter(to_loader))
-        z_hat = map_2(map_1(z[0]))
-        
-        true_labels = z[1]
-        assert(torch.all(true_labels == z[1]))
-        
-        probe_ = probe(z[0])
-        probe_hat_ = probe(z_hat)
-        
-        # print accuracy
-        log(f"# positive examples {torch.sum(true_labels)}")
-        log(f"# negative examples {len(true_labels) - torch.sum(true_labels)}")
-        acc_to = (np.round(probe_) == true_labels).sum().item()/200
-        log(f"Accuracy of {to_.model} probe: {acc_to}")
-        acc_from = (np.round(probe_hat_) == true_labels).sum().item()/200
-        log(f"Accuracy of {from_.model} --> {to_.model} probe: {acc_from}")
-        log(f"Percent Delta Accuracy: {(acc_to - acc_from)/acc_to * 100}")
-        
-        log(f"MSE: {((probe_ - probe_hat_) ** 2).mean()}")
-        log(f"Cosine Similarity: {cosine(u=probe_, v=probe_hat_)}")
-        
-        # number of agreement
-        log(f"Percentage matches: {(np.round(probe_) == np.round(probe_hat_)).sum().item()/200}")
-
-        # pred_z_to.append(label)
-
-def double_post_map_probe(from_, to_, attribute, start, end, gen_image=False, load_gen_img_from_file=False, map_type="linear"):
-    map_1 = torch.load(f"pickles/latent_mapping_{to_.name}_{from_.name}_{to_.dataset}_simul.pth") #_{to_.latent_layer}_{map_type}
-    map_2 = torch.load(f"pickles/latent_mapping_{from_.name}_{to_.name}_{to_.dataset}_simul.pth")
-
-    probe = torch.load(f"probes/{attribute}_{to_.model}_celeba.pth")
-    pred_z_to = []
-    pred_z_to_hat = []
-    
-    log(f"Attribute: {attribute}")
-    if not gen_image:
-        # from_latents = LatentFiles(from_, attribute, "test", silent=True)
-        to_latents = LatentFiles(to_, attribute, "test", silent=True)
-        # from_loader = torch.utils.data.DataLoader(from_latents, batch_size=200, shuffle=False)
-        to_loader = torch.utils.data.DataLoader(to_latents, batch_size=200, shuffle=False)
-
-        with torch.no_grad():
-            # batch_from = next(iter(from_loader))
-            z = next(iter(to_loader))
-            z_hat = map_2(map_1(z[0]))
-            
-            true_labels = z[1]
-            assert(torch.all(true_labels == z[1]))
-            
-            probe_ = probe(z[0])
-            probe_hat_ = probe(z_hat)
-            
-            # print accuracy
-            log(f"# positive examples {torch.sum(true_labels)}")
-            log(f"# negative examples {len(true_labels) - torch.sum(true_labels)}")
-            acc_to = (np.round(probe_) == true_labels).sum().item()/200
-            log(f"Accuracy of {to_.model} probe: {acc_to}")
-            acc_from = (np.round(probe_hat_) == true_labels).sum().item()/200
-            log(f"Accuracy of {from_.model} --> {to_.model} probe: {acc_from}")
-            log(f"Percent Delta Accuracy: {(acc_to - acc_from)/acc_to * 100}")
-            
-            log(f"MSE: {((probe_ - probe_hat_) ** 2).mean()}")
-            log(f"Cosine Similarity: {cosine(u=probe_, v=probe_hat_)}")
-            
-            # number of agreement
-            log(f"Percentage matches: {(np.round(probe_) == np.round(probe_hat_)).sum().item()/200}")
-
-            # pred_z_to.append(label)
-    else:
-        for idx in range(TEST_SIZE):
-            if gen_image:
-                img = PIL.Image.open(f"gen/gan/{to_.dataset}/{str(idx).zfill(6)}.jpg").convert('RGB')
-                from_latent = torch.load(f"latents/{from_.name}/{to_.dataset}/{idx}_w+.pth").detach()
-                z_to = to_.encode(img)
-            else:
-                # load the latents
-                img = PIL.Image.open(f"data/{to_.dataset}/{str(idx).zfill(6)}.jpg").convert('RGB')
-                
-            img = transforms.ToTensor()(img).unsqueeze(0)
-            img = transforms.Resize(to_.pixel_shape[2], antialias=True)(img)
-            img = transforms.CenterCrop(to_.pixel_shape[2])(img)
-
-            if not gen_image:
-                from_latent = from_.encode(img)
-
-            z_to_hat = map(from_latent.flatten().squeeze().detach())
-
-            pred_z_to.append(probe(z_to).item())
-            pred_z_to_hat.append(probe(z_to_hat).item())
-        
-        pred_z_to = np.array(pred_z_to)
-        pred_z_to_hat = np.array(pred_z_to_hat)
-
-        print(pred_z_to.shape)
-        print(pred_z_to_hat.shape)
-        log(f"MSE: {((pred_z_to - pred_z_to_hat) ** 2).mean()}")
-        log(f"Cosine Similarity: {cosine(u=pred_z_to, v=pred_z_to_hat)}")
-
-        ones = np.round(pred_z_to) == np.ones_like(pred_z_to)
-        ones_hat = np.round(pred_z_to_hat) == np.ones_like(pred_z_to_hat)
-
-        print(sum(ones))
-        print(sum(ones_hat))
-
-        unique, counts = np.unique(np.round(pred_z_to_hat) + np.round(pred_z_to), return_counts=True)
-        dict_ = defaultdict(int, zip(unique, counts))
-        print(dict_)
-
-        log(f"Percent Positive Matches: {dict_[2]/np.sum(ones) * 100}")
-        log(f"Percent Negative Matches: {dict_[0]/(end - np.sum(ones)) * 100}")
-
+        to_latents_pred = map.predict(from_latents)
+        probe_ = probe.predict(to_latents)
+        probe_hat_ = probe.predict(to_latents_pred)
+        log(f"Percentage matches: {(np.round(probe_) == np.round(probe_hat_)).sum().item()/TEST_SIZE}")
 
 if __name__ == '__main__':
-    # attributes = list(pd.read_csv('list_attr_celeba.csv').columns[1:])
-    pass
+    attributes = ["Bald", "Blond_Hair", "Wavy_Hair", "Smiling", "Eyeglasses", "Heavy_Makeup", "Male", "No_Beard", "Pale_Skin", "Young"]
+    models = ['nf', 'dm', 'vae-diffusion', 'vqvae', 'gan']
+    
+    for model in models:
+        for attribute in attributes:
+            train_probe(model, attribute)
+
+    for model1 in models:
+        for model2 in models:
+            if model1 != model2 and not ((model1 == "nf" and model2 == "dm") or (model1 == "dm" and model2 == "nf")) and model2 != 'gan':
+                LOG = open(f"probe_map_probe_logs_{model1}_{model2}.txt", "w")
+                for attribute in attributes:
+                    post_map_probe(model1, model2, attribute, gen_image=model1 == 'gan', map_type="linear")

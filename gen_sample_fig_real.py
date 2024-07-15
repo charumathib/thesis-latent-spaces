@@ -1,41 +1,16 @@
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
-import matplotlib as mpl
-from tueplots import figsizes, fonts, bundles
+from tueplots import bundles
 
 plt.rcParams.update(bundles.icml2024())
-from run import test_exact_latent_space_mapping, Model
+from run import test_exact_latent_space_mapping
 
 # celeba: 9086, 9067, 9061, 9018
 ind = 9018
 
-# cifar 1910, 403, 905, 3908 (a failure case)
-# cifar_range = []
-# for i in range(10):
-#     cifar_range += list(range((500 * i) + 401, (500 * i) + 411))
-
-# encoders = ["vae-21", "vqvae", "nf-celeba"]
-# decoders = ["gan", "vae-21", "vqvae", "nf-celeba"]
-# dataset = 'celeba'
-
-# encoders = ['vae-epoch-0', 'vae-epoch-0-1', 'vae-epoch-1', 'vae-21']
-# decoders = ['self', 'vae-21', 'gan']
-
-# encoders = ['ae1', 'ae2']
-# decoders = ['ae1', 'ae2']
-# dataset = 'cifar'
-
 encoders = ["random", "vae-diffusion", "vqvae", "nf", "dm"]
 decoders = ["vae-diffusion", "vqvae", "nf", "dm"]
 dataset = 'celeba'
-
-# encoders = ["vae-diffusion", "nf", "dm"]
-# decoders = ["gan", "vae-diffusion", "nf", "dm"]
-# dataset = 'cifar'
-
-# encoders = ["gan", "vae-diffusion", "nf", "dm"]
-# decoders = ["gan"]
-# dataset = 'cifar'
 
 fig, axs = plt.subplots(len(decoders), len(encoders), figsize=(len(encoders), len(decoders) + 0.5))
 
@@ -50,7 +25,7 @@ def n(name):
 # Load images
 for j, e in enumerate(encoders):
     for i, d in enumerate(decoders):
-        if e == d or d == 'self' or (e == 'vae-diffusion' and d == 'vae'):
+        if e == d or d == 'self':
             if dataset == 'cifar':
                 img = mpimg.imread(f"mapped/{dataset}/{str(cifar_range.index(ind)).zfill(6)}_{e}.jpg")
             else:
@@ -72,7 +47,8 @@ for j, e in enumerate(encoders):
         if e != 'gan' and e != d:
             mse = test_exact_latent_space_mapping(
                 from_name=e, 
-                to_=Model(d, dataset), 
+                to_name=d, 
+                dataset=dataset,
                 on_train_set=False, 
                 synthetic=False, 
                 save_images=False, 
